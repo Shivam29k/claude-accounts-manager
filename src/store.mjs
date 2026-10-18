@@ -10,6 +10,7 @@ export const DEFAULT_SETTINGS = {
   pollActiveSec: 120,
   pollIdleSec: 600,
   cooldownSec: 180, // minimum time between two automatic switches
+  warmup: 'off', // auto-start idle 5-hour windows: "off", "all" accounts, or "some" (accounts with warmup: true)
 };
 
 const MAX_EVENTS = 200;

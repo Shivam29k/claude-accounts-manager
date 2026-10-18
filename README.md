@@ -12,6 +12,7 @@ I run Claude Code on a server and have more than one Claude subscription. Every 
 - Shows each account's 5-hour session, weekly and per-model limits, with reset times, read from the same endpoint as Claude Code's `/usage`.
 - Switches Claude Code to another account. Sessions that are already running pick up the new login on their next request, without a restart.
 - Auto-switch: when the active account reaches a threshold you set (90% by default), it moves Claude Code to the account with the most room left, or to the next one in your order.
+- Can start idle accounts' 5-hour windows for you by sending them a one-word message, so their limits reset sooner. You choose which accounts.
 - Charts token usage from Claude Code's transcripts, per account or per model, for the last 24 hours, 7 days, 30 days or all time.
 - Warns about anything that would bypass your subscriptions, such as an `ANTHROPIC_API_KEY` in a running Claude process, an `apiKeyHelper`, or extra usage (pay-as-you-go) being enabled on an account.
 - Works on a phone. Rows reorder by drag and drop, and names change on double-click or double-tap.
@@ -97,6 +98,14 @@ Open the options with the arrow next to the auto-switch slider.
 - After an automatic switch the app waits at least 3 minutes before switching again.
 - If every account is past the threshold, it stays put and says so.
 
+## Auto-start 5-hour windows
+
+An account's 5-hour window starts with its first message and resets 5 hours later. While an account sits unused, no window is running. When you finally switch to it, its window only starts then, and so only resets 5 hours later. With auto-start on, the app sends "hi" from idle accounts so their windows start right away and have reset, or nearly, by the time you need them. When a window ends and nothing starts a new one, the next check starts it again, so windows run back to back.
+
+Choose **Auto-start 5h** in the options row: Off, All, or Chosen. With Chosen, turn it on for an account in that row's ⋯ menu. Accounts with it on show an "Auto-start" tag, and the 5-hour column says "Idle" while no window is running.
+
+The message goes through the real Claude Code CLI: `claude -p hi --model haiku --tools "" --no-session-persistence`, with the account's token in `CLAUDE_CODE_OAUTH_TOKEN` and its own empty config directory (`$CAM_DATA_DIR/warmup`). It costs a few Haiku tokens, doesn't touch the login Claude Code is using, and doesn't load your settings, hooks or plugins. The app messages an account at most once every 15 minutes and logs each message under Activity.
+
 ## Configuration
 
 All settings are environment variables.
@@ -109,9 +118,9 @@ All settings are environment variables.
 | `CAM_ALLOWED_LOGINS` | empty | Comma-separated Tailscale logins allowed to use the UI. Empty allows anyone who can reach the port |
 | `CAM_CLAUDE_DIR` | `$CLAUDE_CONFIG_DIR` or `~/.claude` | Claude Code's config directory, which holds `.credentials.json` and `projects/` |
 | `CAM_CLAUDE_JSON` | `~/.claude.json` | Claude Code's global config file |
-| `CAM_CLAUDE_BIN` | `claude` on `PATH`, else `~/.local/bin/claude` | The Claude Code executable, used to read its version |
+| `CAM_CLAUDE_BIN` | `claude` on `PATH`, else `~/.local/bin/claude` | The Claude Code executable. Used to read its version and to send auto-start messages |
 
-Threshold, watched limits, switch strategy and check intervals are set in the UI and saved with the accounts.
+Threshold, watched limits, switch strategy, auto-start and check intervals are set in the UI and saved with the accounts.
 
 ## Security
 
@@ -148,6 +157,7 @@ src/store.mjs         state.json: accounts, settings, activity, timeline
 src/tokens.mjs        token usage index built from Claude Code transcripts
 src/usage.mjs         turns the usage API answer into meters
 src/health.mjs        warnings about logins that bypass the subscription
+src/warmup.mjs        auto-start: sends "hi" through the Claude Code CLI as one account
 src/http.mjs          HTTP server and API routes
 public/               the page (plain HTML, CSS and JavaScript modules)
 test/                 unit and integration tests

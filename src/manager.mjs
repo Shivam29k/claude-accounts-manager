@@ -6,10 +6,12 @@ import { accountPart } from './claude-files.mjs';
 import { accountKey, buildAuthorizeUrl, oauthAccountFromProfile, oauthFromTokenResponse, parsePastedCode, profileSummary } from './anthropic.mjs';
 import { extraUsageOn, loadPct, meters } from './usage.mjs';
 import { AppError, b64url, createLock, now } from './util.mjs';
+import { sessionIdle } from './warmup.mjs';
 
 const MIN = 60_000;
 
-export function createManager({ store, files, anthropic, checkHealth = () => [] }) {
+// warmup: optional { run(accessToken) } that sends one message as that account (see warmup.mjs).
+export function createManager({ store, files, anthropic, warmup = null, checkHealth = () => [] }) {
   const { state } = store;
   const lock = createLock();
   const name = store.nameOf;
@@ -224,6 +226,37 @@ export function createManager({ store, files, anthropic, checkHealth = () => [] 
     await switchTo(pick.a.id, `Automatic: ${name(active)} reached ${pct}%, past the ${s.threshold}% switch point`, { auto: true, pct });
   }
 
+  // ---------- auto-start 5-hour windows ----------
+
+  const WARMUP_GAP = 15 * MIN; // never message the same account more often than this
+  const warmupWanted = (a) => state.settings.warmup === 'all' || (state.settings.warmup === 'some' && !!a.warmup);
+
+  async function maybeWarmup() {
+    if (!warmup || state.settings.warmup === 'off') return;
+    for (const a of state.accounts) {
+      if (!warmupWanted(a) || a.authError || !a.usage) continue;
+      if (now() - a.usage.fetchedAt > 15 * MIN) continue; // only act on recent numbers
+      if (!sessionIdle(a.usage.data) || now() - (a.lastWarmupAt || 0) < WARMUP_GAP) continue;
+      a.lastWarmupAt = now();
+      let token;
+      try {
+        token = await validToken(a);
+      } catch {
+        continue;
+      }
+      const r = await warmup.run(token);
+      if (r.ok) {
+        a.warmupError = null;
+        a.nextUsageAt = now() + 20_000; // confirm the window started
+        store.log('warmup', `Started the 5-hour window of ${name(a)}`, { kind: 'warmup', id: a.id, name: name(a) });
+      } else {
+        if (a.warmupError !== r.error) store.log('warmup', `Couldn't start the 5-hour window of ${name(a)}: ${r.error}`, { kind: 'warmupFailed', id: a.id, name: name(a), error: r.error });
+        a.warmupError = r.error;
+      }
+      store.save();
+    }
+  }
+
   // ---------- adding accounts ----------
 
   // Claude's token endpoint rate-limits code exchanges, and attempts made while limited seem to
@@ -316,12 +349,18 @@ export function createManager({ store, files, anthropic, checkHealth = () => [] 
 
   // ---------- small edits ----------
 
-  const updateAccount = ({ id, label, excluded }) =>
+  const updateAccount = ({ id, label, excluded, warmup: wantWarmup }) =>
     lock(async () => {
       const a = store.byId(id);
       if (!a) throw new AppError('Unknown account');
       if (typeof label === 'string') a.label = label.trim().slice(0, 60);
       if (typeof excluded === 'boolean') a.excluded = excluded;
+      if (typeof wantWarmup === 'boolean') {
+        a.warmup = wantWarmup;
+        // Turning it on for one account while the feature is off means "just the chosen ones".
+        if (wantWarmup && state.settings.warmup === 'off') state.settings.warmup = 'some';
+        setTimeout(tick, 100);
+      }
       store.save();
       return { ok: true };
     });
@@ -366,6 +405,7 @@ export function createManager({ store, files, anthropic, checkHealth = () => [] 
       if (b.watch && typeof b.watch === 'object') for (const k of ['session', 'weekly', 'scoped']) if (typeof b.watch[k] === 'boolean') s.watch[k] = b.watch[k];
       if (Number.isFinite(b.pollActiveSec)) s.pollActiveSec = Math.min(1800, Math.max(60, Math.round(b.pollActiveSec)));
       if (Number.isFinite(b.pollIdleSec)) s.pollIdleSec = Math.min(7200, Math.max(120, Math.round(b.pollIdleSec)));
+      if (['off', 'all', 'some'].includes(b.warmup)) s.warmup = b.warmup;
       store.save();
       setTimeout(tick, 100);
       return { ok: true };
@@ -388,6 +428,7 @@ export function createManager({ store, files, anthropic, checkHealth = () => [] 
         if (a.id !== state.activeId && !a.authError && o?.refreshTokenExpiresAt && o.refreshTokenExpiresAt - now() < 7 * 24 * 60 * MIN) await refreshAccount(a).catch(() => {});
       }
       await maybeAutoSwitch();
+      await maybeWarmup();
       if (now() - health.at > MIN) health = { warnings: checkHealth(), at: now() };
       store.save();
     } catch (e) {
@@ -435,6 +476,11 @@ export function createManager({ store, files, anthropic, checkHealth = () => [] 
           meters: ms,
           loadPct: loadPct(ms, state.settings.watch),
           extraUsage: extraUsageOn(a.usage?.data),
+          sessionIdle: a.usage ? sessionIdle(a.usage.data) : null,
+          warmup: !!a.warmup,
+          warmupOn: warmupWanted(a),
+          lastWarmupAt: a.lastWarmupAt || null,
+          warmupError: a.warmupError || null,
           refreshExpiresAt: a.creds?.claudeAiOauth?.refreshTokenExpiresAt || null,
         };
       }),

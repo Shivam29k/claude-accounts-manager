@@ -9,6 +9,7 @@ const OTHER = '#5F5E5A';
 const FAMILY = { opus: ['Opus', PAL[0]], sonnet: ['Sonnet', PAL[1]], haiku: ['Haiku', PAL[2]], fable: ['Fable', PAL[3]] };
 
 const ICON_GRIP = '<svg viewBox="0 0 12 12" fill="currentColor"><circle cx="4" cy="2.5" r="1.1"/><circle cx="8" cy="2.5" r="1.1"/><circle cx="4" cy="6" r="1.1"/><circle cx="8" cy="6" r="1.1"/><circle cx="4" cy="9.5" r="1.1"/><circle cx="8" cy="9.5" r="1.1"/></svg>';
+const ICON_CLOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/></svg>';
 const ICON_DOTS = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>';
 
 let S = null; // /api/state
@@ -76,6 +77,7 @@ function render() {
     $('#thVal').textContent = `${s.threshold}%`;
     document.querySelectorAll('[data-watch]').forEach((el) => (el.checked = !!s.watch[el.dataset.watch]));
     document.querySelectorAll('[name=strategy]').forEach((el) => (el.checked = el.value === s.strategy));
+    document.querySelectorAll('[name=warmup]').forEach((el) => (el.checked = el.value === s.warmup));
   }
   $('#pill').classList.toggle('off', !s.autoSwitch);
   const models = columns().filter((c) => c.cat === 'scoped').map((c) => c.label);
@@ -88,12 +90,16 @@ function render() {
 
 function meterCell(a, c) {
   const m = a.meters.find((x) => x.id === c.id);
+  if (!m && c.cat === 'session' && a.sessionIdle) {
+    return `<div class="mc" title="5-hour window not started"><div class="mc-top"><span class="mc-k">${esc(c.label)}</span><b class="idle">Idle</b></div><div class="bar"></div></div>`;
+  }
   if (!m) return `<div class="mc off"><div class="mc-top"><span class="mc-k">${esc(c.label)}</span><b>–</b></div><div class="bar"></div></div>`;
   const counted = S.settings.watch[m.cat] && m.active;
   const lv = counted ? level(m.pct) : '';
-  const title = `${c.label}: ${Math.round(m.pct)}% used${m.resetsAt ? `, resets ${untilText(m.resetsAt)}` : ''}${counted ? '' : ' (not watched)'}`;
+  const idle = m.cat === 'session' && a.sessionIdle;
+  const title = idle ? '5-hour window not started' : `${c.label}: ${Math.round(m.pct)}% used${m.resetsAt ? `, resets ${untilText(m.resetsAt)}` : ''}${counted ? '' : ' (not watched)'}`;
   return `<div class="mc ${m.active ? '' : 'off'}" title="${esc(title)}">
-    <div class="mc-top"><span class="mc-k">${esc(c.label)}</span><b class="num ${lv}">${Math.round(m.pct)}%</b></div>
+    <div class="mc-top"><span class="mc-k">${esc(c.label)}</span>${idle ? '<b class="idle">Idle</b>' : `<b class="num ${lv}">${Math.round(m.pct)}%</b>`}</div>
     <div class="bar"><i class="${lv}" style="width:${Math.min(100, Math.max(0, m.pct))}%"></i>${counted && S.settings.autoSwitch ? `<s style="left:${S.settings.threshold}%"></s>` : ''}</div>
   </div>`;
 }
@@ -110,6 +116,7 @@ function renderTable() {
           plan(a) && `<span class="tag">${esc(plan(a))}</span>`,
           a.extraUsage && '<span class="tag warn" title="Past the plan limit this account bills extra usage instead of stopping. Turn it off in claude.ai settings.">Extra usage</span>',
           a.excluded && '<span class="tag skip">Skipped</span>',
+          a.warmupOn && `<span class="tag ico ${a.warmupError ? 'warn' : ''}" title="${esc(a.warmupError ? `Auto-start failed: ${a.warmupError}` : 'Auto-start: this account’s 5-hour window starts automatically when it isn’t running')}" aria-label="Auto-start">${ICON_CLOCK}</span>`,
         ].filter(Boolean).join('');
         const cells = a.authError ? `<span class="gone" style="grid-column: span ${cols.length}">Signed out</span>` : cols.map((c) => meterCell(a, c)).join('');
         const action = live ? '<span class="live-dot">Active</span>'
@@ -144,6 +151,8 @@ function eventLine(e) {
   if (d.kind === 'signedout') return [`${nm(d.id, d.name)} signed out`, 'Sign in again'];
   if (d.kind === 'external') return [`Claude Code switched to ${nm(d.id, d.name)}`, 'Outside the app'];
   if (d.kind === 'stuck') return ['Nowhere to switch', `${nm(d.id, d.name)} at ${d.pct}%`];
+  if (d.kind === 'warmup') return [`Started 5-hour window: ${nm(d.id, d.name)}`, 'Auto-start'];
+  if (d.kind === 'warmupFailed') return [`Couldn’t start 5-hour window: ${nm(d.id, d.name)}`, d.error || ''];
   return [e.msg, ''];
 }
 
@@ -339,10 +348,13 @@ function openMenu(btn) {
   const items = [
     !a.authError && ['refresh', 'Refresh usage'],
     ['exclude', a.excluded ? 'Include in auto-switch' : 'Skip in auto-switch'],
+    S.settings.warmup === 'all' ? ['', 'Auto-start 5h: on for all accounts', 'disabled'] : ['warmup', a.warmup ? 'Stop auto-starting 5h window' : 'Auto-start 5h window'],
     ['relogin', 'Sign in again'],
     ['remove', 'Remove', 'danger'],
   ].filter(Boolean);
-  menu.innerHTML = items.map(([act, label, cls]) => `<button role="menuitem" class="${cls || ''}" data-act="${act}" data-id="${a.id}">${label}</button>`).join('');
+  menu.innerHTML = items
+    .map(([act, label, cls]) => (cls === 'disabled' ? `<button role="menuitem" disabled>${label}</button>` : `<button role="menuitem" class="${cls || ''}" data-act="${act}" data-id="${a.id}">${label}</button>`))
+    .join('');
   clearTimeout(menuTimer);
   menu.classList.add('shut');
   menu.hidden = false;
@@ -396,6 +408,9 @@ document.addEventListener(
         toast('Usage refreshed');
       } else if (act === 'exclude') {
         await call('/api/account', { id, excluded: !a.excluded });
+      } else if (act === 'warmup') {
+        await call('/api/account', { id, warmup: !a.warmup });
+        toast(a.warmup ? `Stopped auto-starting ${nameOf(a)}` : `${nameOf(a)}’s 5-hour window will start automatically`);
       } else if (act === 'remove') {
         if (!confirm(`Remove ${nameOf(a)}? Claude Code keeps its current login.`)) return;
         await call('/api/account/remove', { id });
@@ -470,6 +485,7 @@ $('#threshold').oninput = (e) => {
 $('#threshold').onchange = (e) => saveSettings({ threshold: Number(e.target.value) });
 document.querySelectorAll('[data-watch]').forEach((el) => (el.onchange = () => saveSettings({ watch: { [el.dataset.watch]: el.checked } })));
 document.querySelectorAll('[name=strategy]').forEach((el) => (el.onchange = () => saveSettings({ strategy: el.value })));
+document.querySelectorAll('[name=warmup]').forEach((el) => (el.onchange = () => saveSettings({ warmup: el.value })));
 
 // ---------- rename: double-click, or double-tap on phones ----------
 

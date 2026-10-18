@@ -7,7 +7,8 @@ import { readJson } from './util.mjs';
 
 const AUTH_ENV = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
-export function checkHealth({ claudeDir, claudeJson }) {
+// ignorePids: Claude processes this app started itself (they set CLAUDE_CODE_OAUTH_TOKEN on purpose).
+export function checkHealth({ claudeDir, claudeJson, ignorePids = new Set() }) {
   const warnings = [];
   const seen = new Set();
 
@@ -17,6 +18,7 @@ export function checkHealth({ claudeDir, claudeJson }) {
     pids = fs.readdirSync('/proc').filter((d) => /^\d+$/.test(d));
   } catch {}
   for (const pid of pids) {
+    if (ignorePids.has(Number(pid))) continue;
     try {
       if (fs.statSync(`/proc/${pid}`).uid !== process.getuid()) continue;
       if (!/claude/.test(fs.readlinkSync(`/proc/${pid}/exe`))) continue;

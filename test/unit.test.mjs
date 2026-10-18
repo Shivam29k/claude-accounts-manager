@@ -7,6 +7,7 @@ import { accountPart, createClaudeFiles } from '../src/claude-files.mjs';
 import { loadConfig } from '../src/config.mjs';
 import { createStore } from '../src/store.mjs';
 import { extraUsageOn, loadPct, meters } from '../src/usage.mjs';
+import { sessionIdle } from '../src/warmup.mjs';
 import { axisStep, chartBins, compact, modelInfo, plan } from '../public/lib.js';
 import { profile, readJson, tempDir, writeJson } from './helpers.mjs';
 
@@ -30,6 +31,15 @@ test('meters: classic fields plus limits[] without duplicates', () => {
   assert.equal(loadPct(ms, { session: true, weekly: true, scoped: false }), 40);
   assert.equal(loadPct([], { session: true }), null);
   assert.equal(extraUsageOn({ extra_usage: { is_enabled: true } }), true);
+});
+
+test('sessionIdle: no window, no reset time, or a reset time in the past', () => {
+  const now = Date.UTC(2026, 9, 18, 12);
+  assert.equal(sessionIdle({ five_hour: null }, now), true);
+  assert.equal(sessionIdle({}, now), true);
+  assert.equal(sessionIdle({ five_hour: { utilization: 0, resets_at: null } }, now), true);
+  assert.equal(sessionIdle({ five_hour: { utilization: 40, resets_at: new Date(now - 1000).toISOString() } }, now), true);
+  assert.equal(sessionIdle({ five_hour: { utilization: 0, resets_at: new Date(now + 3600_000).toISOString() } }, now), false);
 });
 
 test('authorize URL carries PKCE, state and the Claude Code client', () => {

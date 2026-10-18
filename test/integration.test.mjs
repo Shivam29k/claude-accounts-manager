@@ -11,7 +11,7 @@ import { createStore } from '../src/store.mjs';
 import { createTokenIndex } from '../src/tokens.mjs';
 import { fakeAnthropic, oauth, profile, readJson, tempDir, usageAt, writeJson } from './helpers.mjs';
 
-function setup() {
+function setup({ warmup = null } = {}) {
   const dir = tempDir();
   const claudeDir = path.join(dir, 'claude');
   fs.mkdirSync(claudeDir);
@@ -23,7 +23,7 @@ function setup() {
   anthropic.owners.set('at-1-1', 1);
   const store = createStore(path.join(dir, 'state.json'));
   const files = createClaudeFiles({ claudeDir, claudeJson, backupDir: path.join(dir, 'backups') });
-  const manager = createManager({ store, files, anthropic });
+  const manager = createManager({ store, files, anthropic, warmup });
   return { dir, claudeDir, claudeJson, anthropic, store, files, manager, creds: () => readJson(files.credsFile) };
 }
 
@@ -107,6 +107,33 @@ test('sign-in: stale links are rejected and a 429 pauses further attempts', asyn
   await assert.rejects(env.manager.finishLogin({ code: 'code' }), /rate-limiting/);
   assert.equal(env.anthropic.calls.exchange, 1, 'no second request while blocked');
   assert.ok(env.manager.publicState().signinBlockedUntil > Date.now());
+});
+
+test('auto-start messages only idle accounts that are switched on, at most once per 15 minutes', async () => {
+  const sent = [];
+  const env = setup({ warmup: { run: async (token) => (sent.push(token), { ok: true }) } });
+  await env.manager.start();
+  const { id: id2 } = await addAccount(env, 2);
+  await addAccount(env, 3);
+  env.anthropic.usage.set(1, usageAt(30)); // window running
+  env.anthropic.usage.set(2, { five_hour: null }); // idle
+  env.anthropic.usage.set(3, { five_hour: { utilization: 0, resets_at: null } }); // idle
+  await env.manager.refreshUsage();
+
+  await env.manager.tick(); // feature is off by default
+  assert.equal(sent.length, 0);
+
+  await env.manager.updateAccount({ id: id2, warmup: true }); // one account on -> mode "some"
+  assert.equal(env.store.state.settings.warmup, 'some');
+  await env.manager.tick();
+  assert.deepEqual(sent.map((t) => t.split('-')[1]), ['2']);
+
+  await env.manager.updateSettings({ warmup: 'all' });
+  await env.manager.tick();
+  assert.deepEqual(sent.map((t) => t.split('-')[1]), ['2', '3'], 'account 2 waits out its 15 minutes, account 1 is running');
+  const st = env.manager.publicState().accounts.find((a) => a.id === id2);
+  assert.equal(st.warmupOn, true);
+  assert.equal(env.store.state.events.filter((e) => e.data?.kind === 'warmup').length, 2);
 });
 
 test('public state never contains tokens', async () => {

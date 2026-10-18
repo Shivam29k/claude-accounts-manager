@@ -13,6 +13,7 @@ import { createHttpServer } from './src/http.mjs';
 import { createManager } from './src/manager.mjs';
 import { createStore } from './src/store.mjs';
 import { createTokenIndex } from './src/tokens.mjs';
+import { createWarmupRunner } from './src/warmup.mjs';
 
 const config = loadConfig();
 fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
@@ -23,11 +24,13 @@ console.log(`requests mimic Claude Code ${versions.cli} (token endpoint: axios/$
 
 const store = createStore(path.join(config.dataDir, 'state.json'));
 const files = createClaudeFiles({ claudeDir: config.claudeDir, claudeJson: config.claudeJson, backupDir: path.join(config.dataDir, 'backups') });
+const warmup = createWarmupRunner({ claudeBin: config.claudeBin, workDir: path.join(config.dataDir, 'warmup') });
 const manager = createManager({
   store,
   files,
   anthropic: createAnthropicClient(versions),
-  checkHealth: () => checkHealth(config),
+  warmup,
+  checkHealth: () => checkHealth({ ...config, ignorePids: warmup.pids }),
 });
 const tokens = createTokenIndex({
   projectsDir: path.join(config.claudeDir, 'projects'),
