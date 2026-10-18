@@ -90,19 +90,29 @@ function render() {
   renderLog();
 }
 
+// "resets in 2h 41m" under each bar; the exact time is in the tooltip.
+function resetLine(m, idle) {
+  if (idle) return '<div class="mc-reset">not started</div>';
+  if (!m?.resetsAt) return '<div class="mc-reset">&nbsp;</div>';
+  const when = untilText(m.resetsAt);
+  return `<div class="mc-reset">${when === 'now' ? 'resetting now' : `resets ${esc(when)}`}</div>`;
+}
+const resetClock = (iso) => new Date(iso).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+
 function meterCell(a, c) {
   const m = a.meters.find((x) => x.id === c.id);
   if (!m && c.cat === 'session' && a.sessionIdle) {
-    return `<div class="mc" title="5-hour window not started"><div class="mc-top"><span class="mc-k">${esc(c.label)}</span><b class="idle">Idle</b></div><div class="bar"></div></div>`;
+    return `<div class="mc" title="5-hour window not started"><div class="mc-top"><span class="mc-k">${esc(c.label)}</span><b class="idle">Idle</b></div><div class="bar"></div>${resetLine(null, true)}</div>`;
   }
-  if (!m) return `<div class="mc off"><div class="mc-top"><span class="mc-k">${esc(c.label)}</span><b>–</b></div><div class="bar"></div></div>`;
+  if (!m) return `<div class="mc off"><div class="mc-top"><span class="mc-k">${esc(c.label)}</span><b>–</b></div><div class="bar"></div>${resetLine(null)}</div>`;
   const counted = S.settings.watch[m.cat] && m.active;
   const lv = counted ? level(m.pct, limitOf(a)) : '';
   const idle = m.cat === 'session' && a.sessionIdle;
-  const title = idle ? '5-hour window not started' : `${c.label}: ${Math.round(m.pct)}% used${m.resetsAt ? `, resets ${untilText(m.resetsAt)}` : ''}${counted ? '' : ' (not watched)'}`;
+  const title = idle ? '5-hour window not started' : `${c.label}: ${Math.round(m.pct)}% used${m.resetsAt ? `, resets ${resetClock(m.resetsAt)}` : ''}${counted ? '' : ' (not watched)'}`;
   return `<div class="mc ${m.active ? '' : 'off'}" title="${esc(title)}">
     <div class="mc-top"><span class="mc-k">${esc(c.label)}</span>${idle ? '<b class="idle">Idle</b>' : `<b class="num ${lv}">${Math.round(m.pct)}%</b>`}</div>
     <div class="bar"><i class="${lv}" style="width:${Math.min(100, Math.max(0, m.pct))}%"></i>${counted && S.settings.autoSwitch ? `<s style="left:${limitOf(a)}%"></s>` : ''}</div>
+    ${resetLine(m, idle)}
   </div>`;
 }
 
