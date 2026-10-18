@@ -29,6 +29,7 @@ const HOME = os.homedir();
 const DIR = process.env.CAM_AGENT_DIR || path.join(HOME, '.claude-accounts-agent');
 const CONFIG = path.join(DIR, 'config.json');
 const TOKENS = path.join(DIR, 'tokens.json');
+const BACKUPS = path.join(DIR, 'backups');
 const SERVICE = 'claude-accounts-agent';
 const MAC_LABEL = 'com.claude-accounts-manager.agent';
 const WIN_TASK = 'Claude Accounts Agent';
@@ -90,7 +91,21 @@ function parseSecret(raw) {
   return null;
 }
 
+// Runs `security`. Its output never goes into errors or logs: on failure it can echo back the
+// command it was given, which holds the secret.
+function runSecurity(security, args, input) {
+  try {
+    const out = execFileSync(security, args, { input, encoding: 'utf8', stdio: [input ? 'pipe' : 'ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 16 << 20 });
+    return { code: 0, out };
+  } catch (e) {
+    return { code: typeof e.status === 'number' ? e.status : -1, out: '' };
+  }
+}
+const ITEM_NOT_FOUND = 44; // errSecItemNotFound
+
 // { read() -> object | null, write(object) } for Claude Code's whole credentials blob.
+// read() returns null only when there is no login at all, and throws when there is one it can't
+// read, so a login (with MCP tokens and the like) is never overwritten blind.
 export function credentialStore({ platform = process.platform, paths = claudePaths(), security = '/usr/bin/security' } = {}) {
   if (platform === 'darwin') {
     const svc = keychainService(paths.configDir);
@@ -98,28 +113,64 @@ export function credentialStore({ platform = process.platform, paths = claudePat
     return {
       where: `Keychain item "${svc}"`,
       read() {
-        try {
-          return parseSecret(execFileSync(security, ['find-generic-password', '-s', svc, '-a', acct, '-w'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
-        } catch {
-          return null;
-        }
+        const r = runSecurity(security, ['find-generic-password', '-s', svc, '-a', acct, '-w']);
+        if (r.code === ITEM_NOT_FOUND) return null;
+        if (r.code !== 0) throw new Error(`couldn't read the Keychain (security exited ${r.code})`);
+        const o = parseSecret(r.out.trim());
+        if (!o) throw new Error(`the Keychain item "${svc}" isn't readable JSON; leaving it alone`);
+        return o;
       },
       write(obj) {
-        // Through stdin, so the secret never shows up in a process list.
+        // Same as Claude Code: through stdin (keeps the secret out of the process list) while the
+        // line fits security's ~4 KB line buffer; longer ones as arguments, since `security -i`
+        // would cut the line and run the pieces as separate commands.
         const hex = Buffer.from(JSON.stringify(obj)).toString('hex');
-        execFileSync(security, ['-i'], { input: `add-generic-password -U -a "${acct}" -s "${svc}" -X "${hex}"\n`, stdio: ['pipe', 'ignore', 'pipe'] });
+        const line = `add-generic-password -U -a "${acct}" -s "${svc}" -X "${hex}"\n`;
+        const r = line.length <= 4000 ? runSecurity(security, ['-i'], line) : runSecurity(security, ['add-generic-password', '-U', '-a', acct, '-s', svc, '-X', hex]);
+        if (r.code !== 0) throw new Error(`couldn't write the Keychain (security exited ${r.code})`);
       },
     };
   }
   const file = path.join(paths.claudeDir, '.credentials.json');
-  return { where: file, read: () => readJson(file), write: (obj) => writeJsonAtomic(file, obj) };
+  return {
+    where: file,
+    read() {
+      let text;
+      try {
+        text = fs.readFileSync(file, 'utf8');
+      } catch (e) {
+        if (e.code === 'ENOENT') return null;
+        throw new Error(`couldn't read ${file} (${e.code})`);
+      }
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new Error(`${file} isn't valid JSON; leaving it alone`);
+      }
+    },
+    write: (obj) => writeJsonAtomic(file, obj),
+  };
 }
 
-// Put this account's login in, keeping everything else in the blob.
-export function writeLogin(store, claudeAiOauth) {
+// Put this account's login in, keeping everything else in the blob (MCP server tokens and so on).
+// backupDir: keeps original.json (the first login this agent replaced) and last.json (the one
+// before the latest write), so nothing it overwrites is lost.
+export function writeLogin(store, claudeAiOauth, backupDir = null) {
   const cur = store.read() || {};
-  for (const k of ACCOUNT_KEYS) delete cur[k];
-  store.write({ ...cur, claudeAiOauth });
+  if (backupDir && Object.keys(cur).length) {
+    fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+    const original = path.join(backupDir, 'original.json');
+    if (!fs.existsSync(original)) writeJsonAtomic(original, cur);
+    writeJsonAtomic(path.join(backupDir, 'last.json'), cur);
+  }
+  const next = { ...cur };
+  for (const k of ACCOUNT_KEYS) delete next[k];
+  next.claudeAiOauth = claudeAiOauth;
+  store.write(next);
+  // Check that it landed and that everything else is still there.
+  const after = store.read() || {};
+  const kept = Object.keys(next).every((k) => JSON.stringify(after[k]) === JSON.stringify(next[k]));
+  if (!kept) throw new Error(`the login in ${store.where} didn't save as expected${backupDir ? `; the previous one is in ${backupDir}` : ''}`);
 }
 
 // ~/.claude.json "oauthAccount": the profile Claude Code shows (email, organization).
@@ -304,8 +355,14 @@ async function post(hub, pathname, body, token, timeoutMs = 20_000) {
 }
 
 // One round: report, get the login this machine should have, write it if it differs.
-export async function syncOnce({ cfg, store, paths, counter = null, wait = 0, state = {} }) {
-  const cur = store.read();
+export async function syncOnce({ cfg, store, paths, counter = null, wait = 0, state = {}, backupDir = BACKUPS }) {
+  // A login that can't be read is reported and left alone, never overwritten.
+  let cur = null, unreadable = null;
+  try {
+    cur = store.read();
+  } catch (e) {
+    unreadable = e.message;
+  }
   const live = cur?.claudeAiOauth;
   const have = tokenHash(live?.accessToken);
   // A login the hub didn't write: an existing one, or `claude /login` run here. Sent once so the
@@ -324,7 +381,7 @@ export async function syncOnce({ cfg, store, paths, counter = null, wait = 0, st
       hostname: os.hostname(),
       agentVersion: AGENT_VERSION,
       claudeVersion: readClaudeVersion(),
-      warnings: warnings(paths),
+      warnings: [...warnings(paths), ...(unreadable ? [`The agent can't update the login here: ${unreadable}`] : [])],
       tokens: batch,
     },
     cfg.token,
@@ -333,8 +390,11 @@ export async function syncOnce({ cfg, store, paths, counter = null, wait = 0, st
   if (foreign) state.foreignSent = { hash: have, at: Date.now() };
   if (counter && Number.isInteger(res.ackSeq)) counter.ack(res.ackSeq);
   const want = res.creds?.claudeAiOauth;
-  if (want?.accessToken && tokenHash(want.accessToken) !== tokenHash(store.read()?.claudeAiOauth?.accessToken)) {
-    writeLogin(store, want);
+  if (unreadable) {
+    if (state.unreadable !== unreadable) log(unreadable);
+    state.unreadable = unreadable;
+  } else if (want?.accessToken && tokenHash(want.accessToken) !== tokenHash(store.read()?.claudeAiOauth?.accessToken)) {
+    writeLogin(store, want, backupDir);
     state.wrote = tokenHash(want.accessToken);
     const who = res.account?.email || res.account?.name || 'the chosen account';
     if (state.lastAccount !== res.account?.id) log(`Claude Code here now uses ${who}`);
@@ -371,7 +431,7 @@ async function run() {
         log(e.message);
         await sleep(10 * 60_000);
       } else {
-        log(`can't reach the hub: ${e.message}`);
+        log(`check-in failed: ${e.message}`);
         await sleep(backoff);
         backoff = Math.min(backoff * 2, 60_000);
       }

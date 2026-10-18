@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
-import { createTokenCounter, credentialStore, keychainService, syncOnce, tokenHash } from '../agent/agent.mjs';
+import { createTokenCounter, credentialStore, keychainService, syncOnce, tokenHash, writeLogin } from '../agent/agent.mjs';
 import { createClaudeFiles } from '../src/claude-files.mjs';
 import { createHttpServer } from '../src/http.mjs';
 import { createManager } from '../src/manager.mjs';
@@ -181,8 +181,10 @@ test('agent: pairs over HTTP, writes the login without a refresh token, follows 
   const store = credentialStore({ platform: 'linux', paths });
   const cfg = { hub, token: pairRes.token };
   const state = {};
+  const backupDir = path.join(box, 'backups');
+  const sync = (o = {}) => syncOnce({ cfg, store, paths, state, backupDir, ...o });
 
-  let res = await syncOnce({ cfg, store, paths, state });
+  let res = await sync();
   const m = env.manager.machineByToken(pairRes.token);
   assert.equal(m.activeId, env.store.state.accounts[0].id, 'adopted as account 1');
   let creds = readJson(path.join(box, '.credentials.json'));
@@ -191,14 +193,15 @@ test('agent: pairs over HTTP, writes the login without a refresh token, follows 
   assert.deepEqual(creds.mcpOAuth, { s: 'keep' });
   assert.equal(fs.statSync(path.join(box, '.credentials.json')).mode & 0o777, 0o600);
   assert.equal(state.wrote, tokenHash(creds.claudeAiOauth.accessToken));
+  assert.equal(readJson(path.join(backupDir, 'original.json')).claudeAiOauth.refreshToken, 'rt-1-50', 'the replaced login is kept');
 
   // Nothing changed: the check-in waits (long poll), then answers with the same login.
   const t0 = Date.now();
-  res = await syncOnce({ cfg, store, paths, state, wait: 1000 });
+  res = await sync({ wait: 1000 });
   assert.ok(Date.now() - t0 >= 900, 'held until the wait ran out');
 
   // A switch on the dashboard ends the wait early and reaches the machine.
-  const pending = syncOnce({ cfg, store, paths, state, wait: 1000 });
+  const pending = sync({ wait: 1000 });
   await env.manager.switchMachine(m.id, id2);
   res = await pending;
   creds = readJson(path.join(box, '.credentials.json'));
@@ -206,6 +209,62 @@ test('agent: pairs over HTTP, writes the login without a refresh token, follows 
   assert.equal(res.account.email, 'user2@example.com');
   assert.equal(readJson(paths.claudeJson).oauthAccount.accountUuid, 'acct-2');
   assert.deepEqual(readJson(paths.claudeJson).projects, {});
+
+  // A credentials file it can't parse is reported and left untouched.
+  fs.writeFileSync(path.join(box, '.credentials.json'), '{"claudeAiOauth": {"acc');
+  await env.manager.switchMachine(m.id, env.store.state.accounts[0].id);
+  await sync();
+  assert.equal(fs.readFileSync(path.join(box, '.credentials.json'), 'utf8'), '{"claudeAiOauth": {"acc');
+  assert.match(m.warnings.join(), /can't update the login here: .*isn't valid JSON/);
+});
+
+// A stand-in for macOS `security`, backed by a JSON file. Like the real one, `-i` cuts lines at
+// 4 KB and echoes what it can't run to stderr (secrets included).
+function fakeSecurity(dir) {
+  const bin = path.join(dir, 'security');
+  const db = path.join(dir, 'kc.json');
+  fs.writeFileSync(db, '{}');
+  fs.writeFileSync(
+    bin,
+    `#!/usr/bin/env node
+const fs = require('fs'), db = ${JSON.stringify(db)}, kc = JSON.parse(fs.readFileSync(db, 'utf8'));
+const a = process.argv.slice(2), opt = (args, f) => args[args.indexOf(f) + 1];
+const add = (args) => { kc[opt(args, '-s')] = Buffer.from(opt(args, '-X'), 'hex').toString('utf8'); fs.writeFileSync(db, JSON.stringify(kc)); };
+if (a[0] === 'find-generic-password') { const v = kc[opt(a, '-s')]; if (v === undefined) process.exit(44); process.stdout.write(v + '\\n'); }
+else if (a[0] === 'add-generic-password') add(a);
+else if (a[0] === '-i') {
+  const line = fs.readFileSync(0, 'utf8').trim();
+  if (line.length > 4096) { process.stderr.write('security: unknown command "' + line.slice(4096) + '": returned 1\\n'); process.exit(1); }
+  add(line.match(/"[^"]*"|\\S+/g).map((t) => t.replace(/^"|"$/g, '')));
+}`,
+    { mode: 0o755 },
+  );
+  return { bin, db, items: () => JSON.parse(fs.readFileSync(db, 'utf8')) };
+}
+
+test('agent on macOS: big Keychain items are written whole, other keys kept, errors carry no secrets', () => {
+  const dir = tempDir();
+  const sec = fakeSecurity(dir);
+  const paths = { configDir: '', claudeDir: dir, claudeJson: path.join(dir, '.claude.json') };
+  const store = credentialStore({ platform: 'darwin', paths, security: sec.bin });
+  assert.equal(store.read(), null, 'no item yet');
+  // An existing login with lots of MCP tokens: well past security's 4 KB line limit.
+  const mcpOAuth = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`server-${i}`, { accessToken: `mcp-secret-${i}-${'x'.repeat(60)}` }]));
+  store.write({ claudeAiOauth: oauth(1), mcpOAuth });
+  writeLogin(store, { accessToken: 'at-2-1', expiresAt: 1 }, path.join(dir, 'backups'));
+  const saved = JSON.parse(sec.items()['Claude Code-credentials']);
+  assert.deepEqual(saved.mcpOAuth, mcpOAuth);
+  assert.deepEqual(saved.claudeAiOauth, { accessToken: 'at-2-1', expiresAt: 1 });
+  assert.deepEqual(readJson(path.join(dir, 'backups', 'original.json')).mcpOAuth, mcpOAuth);
+
+  // An item that isn't JSON is never overwritten.
+  fs.writeFileSync(sec.db, JSON.stringify({ 'Claude Code-credentials': '{"claudeAiOauth": trunc' }));
+  assert.throws(() => writeLogin(store, { accessToken: 'at-3-1' }), /isn't readable JSON/);
+  assert.equal(sec.items()['Claude Code-credentials'], '{"claudeAiOauth": trunc');
+
+  // A failing `security -i` (which echoes the secret) produces an error without it.
+  const failing = credentialStore({ platform: 'darwin', paths, security: '/bin/false' });
+  assert.throws(() => failing.write({ claudeAiOauth: { accessToken: 'secret-at' } }), (e) => !/secret|[0-9a-f]{40}/.test(e.message));
 });
 
 test('agent token counter: counts once, batches, resends until acknowledged', async () => {
