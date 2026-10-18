@@ -16,6 +16,7 @@ let S = null; // /api/state
 let T = null; // /api/tokens
 let range = localStorage.getItem('cam.range') || '7d';
 let view = localStorage.getItem('cam.view') || 'accounts';
+let machineSel = localStorage.getItem('cam.machine') || 'local'; // whose account the table shows and switches
 let editing = false, renaming = false, drag = null, swallowClick = false, relogin = null, logAll = false;
 
 async function call(path, body) {
@@ -56,20 +57,33 @@ function columns() {
 
 const tightest = (a) => a.meters.filter((m) => S.settings.watch[m.cat] && m.active).sort((x, y) => y.pct - x.pct)[0] || null;
 
+// Machines: this one, plus any running the agent. The tabs only show once there is more than one.
+const multi = () => S.machines.length > 1;
+const selected = () => S.machines.find((m) => m.id === machineSel) || S.machines[0];
+const machineById = (id) => S.machines.find((m) => m.id === id);
+const ICON_LAPTOP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/></svg>';
+
 // ---------- page ----------
 
 function render() {
   const s = S.settings;
-  const active = S.accounts.find((a) => a.id === S.activeId);
+  const sel = selected();
+  const active = S.accounts.find((a) => a.id === sel.activeId);
   const t = active && tightest(active);
-  $('#status').innerHTML = active
-    ? `Using <b>${esc(nameOf(active))}</b>${t?.resetsAt ? ` · resets ${esc(untilText(t.resetsAt))}` : ''}`
-    : S.liveUnknown ? `Using <b>${esc(S.liveUnknown.email)}</b> · not saved` : S.accounts.length ? 'Not signed in' : 'No accounts yet';
+  const on = multi() ? ` on <b>${esc(sel.name)}</b>` : '';
+  $('#status').innerHTML = !sel.local && !sel.online
+    ? `<b>${esc(sel.name)}</b> is offline · seen ${esc(ago(sel.lastSeen))}`
+    : active
+      ? `Using <b>${esc(nameOf(active))}</b>${on}${t?.resetsAt ? ` · resets ${esc(untilText(t.resetsAt))}` : ''}`
+      : sel.local && S.liveUnknown ? `Using <b>${esc(S.liveUnknown.email)}</b>${on} · not saved`
+      : !sel.local ? `No account chosen for <b>${esc(sel.name)}</b>` : S.accounts.length ? 'Not signed in' : 'No accounts yet';
 
   let alerts = '';
-  if (S.liveUnknown) alerts += `<div class="alert attn"><span>Claude Code is signed in as <b>${esc(S.liveUnknown.email)}</b>, which isn’t saved.</span><button class="btn primary" data-act="import">Save</button></div>`;
-  for (const w of S.health) alerts += `<div class="alert">${esc(w)}</div>`;
-  const room = S.accounts.some((a) => a.id !== S.activeId && !a.excluded && !a.authError && a.loadPct != null && a.loadPct < limitOf(a));
+  const here = multi() ? ` on ${esc(S.machines[0].name)}` : '';
+  if (S.liveUnknown) alerts += `<div class="alert attn"><span>Claude Code${here} is signed in as <b>${esc(S.liveUnknown.email)}</b>, which isn’t saved.</span><button class="btn primary" data-act="import">Save</button></div>`;
+  for (const w of S.health) alerts += `<div class="alert">${multi() ? `${esc(S.machines[0].name)}: ` : ''}${esc(w)}</div>`;
+  for (const m of S.machines) if (!m.local) for (const w of m.warnings || []) alerts += `<div class="alert">${esc(m.name)}: ${esc(w)}</div>`;
+  const room = S.accounts.some((a) => a.id !== sel.activeId && !a.excluded && !a.authError && a.loadPct != null && a.loadPct < limitOf(a));
   if (s.autoSwitch && active && active.loadPct >= limitOf(active) && !room) alerts += `<div class="alert">Every account is past its limit. Staying on ${esc(nameOf(active))} until a limit resets.</div>`;
   $('#alerts').innerHTML = alerts;
 
@@ -85,9 +99,31 @@ function render() {
   const models = columns().filter((c) => c.cat === 'scoped').map((c) => c.label);
   $('#scopedName').textContent = models.length ? models.join(', ') : 'Per-model';
 
+  if (!renaming) renderMachines();
   if (!drag && !renaming) renderTable();
   $('#checked').textContent = `Checked ${ago(Math.max(0, ...S.accounts.map((a) => a.usageAt || 0)))}`;
   renderLog();
+}
+
+function renderMachines() {
+  const bar = $('#machines');
+  bar.hidden = !multi();
+  if (!multi()) return;
+  const sel = selected();
+  bar.innerHTML = S.machines
+    .map((m) => {
+      const acc = S.accounts.find((a) => a.id === m.activeId);
+      const sub = !m.online ? `offline · ${ago(m.lastSeen)}` : acc ? nameOf(acc) : m.local && S.liveUnknown ? S.liveUnknown.email : 'no account';
+      const on = m.id === sel.id;
+      return `<div class="mtab ${on ? 'on' : ''} ${m.online ? '' : 'away'}">
+        <div class="mt-main" role="button" tabindex="0" data-machine="${m.id}" aria-pressed="${on}">
+          <span class="mt-ico"><i class="mt-dot"></i>${ICON_LAPTOP}</span>
+          <span class="mt-text"><b data-rename-machine="${m.id}" title="${on ? 'Double-click to rename' : esc(m.name)}">${esc(m.name)}</b><span>${esc(sub)}</span></span>
+        </div>
+        ${on ? `<button class="dots" data-mmenu="${m.id}" aria-label="More for ${esc(m.name)}" aria-haspopup="menu">${ICON_DOTS}</button>` : ''}
+      </div>`;
+    })
+    .join('');
 }
 
 // Right side of the line above a bar: a reset icon and the time left ("2h 41m", "3d 9h").
@@ -123,11 +159,15 @@ function renderTable() {
   const cols = columns();
   $('#accounts').style.setProperty('--cols', `minmax(220px, 2fr) repeat(${cols.length}, minmax(80px, 1fr)) 84px 28px`);
   $('#thead').innerHTML = `<span>Account</span>${cols.map((c) => `<span>${esc(c.label)}</span>`).join('')}<span></span><span></span>`;
+  const sel = selected();
   $('#rows').innerHTML =
     S.accounts
       .map((a) => {
-        const live = a.id === S.activeId;
+        const live = a.id === sel.activeId;
+        // Other machines on this account share its limits: name them on the row.
+        const elsewhere = multi() ? S.machines.filter((m) => m.id !== sel.id && m.activeId === a.id) : [];
         const tags = [
+          ...elsewhere.map((m) => `<span class="tag mtag ${m.online ? '' : 'away'}" title="In use on ${esc(m.name)}${m.online ? '' : ' (offline)'}">${ICON_LAPTOP}${esc(m.name)}</span>`),
           plan(a) && `<span class="tag">${esc(plan(a))}</span>`,
           a.extraUsage && '<span class="tag warn" title="Past the plan limit this account bills extra usage instead of stopping. Turn it off in claude.ai settings.">Extra usage</span>',
           a.excluded && '<span class="tag skip">Skipped</span>',
@@ -158,15 +198,18 @@ function eventLine(e) {
     const a = S.accounts.find((x) => x.id === id);
     return a ? nameOf(a) : fallback || 'removed account';
   };
-  if (e.type === 'switch' && d.to) return [`${d.from ? `${nm(d.from, d.fromName)} → ` : ''}${nm(d.to, d.toName)}`, d.auto ? `Auto · ${d.pct}%` : ''];
+  const mn = d.machine && multi() ? `${machineById(d.machine)?.name || d.machineName || 'removed machine'}: ` : '';
+  if (d.kind === 'machineAdded') return [`Added machine ${machineById(d.machine)?.name || d.machineName}`, ''];
+  if (d.kind === 'machineRemoved') return [`Removed machine ${d.machineName}`, ''];
+  if (e.type === 'switch' && d.to) return [`${mn}${d.from ? `${nm(d.from, d.fromName)} → ` : ''}${nm(d.to, d.toName)}`, d.auto ? `Auto · ${d.pct}%` : ''];
   if (d.kind === 'limited') return ['Sign-in rate-limited', d.until ? `Retry ${clock(new Date(d.until))}` : ''];
   if (d.kind === 'failed') return ['Sign-in failed', e.msg];
   if (d.kind === 'added') return [`Added ${nm(d.id, d.name)}`, ''];
   if (d.kind === 'relogin') return [`Signed in again: ${nm(d.id, d.name)}`, ''];
   if (d.kind === 'removed') return [`Removed ${d.name}`, ''];
   if (d.kind === 'signedout') return [`${nm(d.id, d.name)} signed out`, 'Sign in again'];
-  if (d.kind === 'external') return [`Claude Code switched to ${nm(d.id, d.name)}`, 'Outside the app'];
-  if (d.kind === 'stuck') return ['Nowhere to switch', `${nm(d.id, d.name)} at ${d.pct}%`];
+  if (d.kind === 'external') return [`${mn}Claude Code switched to ${nm(d.id, d.name)}`, 'Outside the app'];
+  if (d.kind === 'stuck') return [`${mn}Nowhere to switch`, `${nm(d.id, d.name)} at ${d.pct}%`];
   if (d.kind === 'warmup') return [`Started 5-hour window: ${nm(d.id, d.name)}`, 'Auto-start'];
   if (d.kind === 'warmupFailed') return [`Couldn’t start 5-hour window: ${nm(d.id, d.name)}`, d.error || ''];
   return [e.msg, ''];
@@ -190,7 +233,7 @@ function renderLog() {
 
 // Series definitions for the current view: how to key a raw id, its name, colour and stack order.
 function seriesFor(byModel) {
-  if (byModel) {
+  if (byModel === true) {
     const versions = {}, extra = [];
     return {
       key(id) {
@@ -208,6 +251,16 @@ function seriesFor(byModel) {
       order: (tot) => ['other', 'opus', 'sonnet', 'haiku', 'fable', ...extra].filter((k) => tot[k]),
     };
   }
+  if (byModel === 'machines') {
+    // Machines in tab order; "Other" is usage from removed machines (or past the fifth colour).
+    const known = new Map(S.machines.slice(0, PAL.length).map((m, i) => [m.id, [m, PAL[i]]]));
+    return {
+      key: (id) => (known.has(id) ? id : 'other'),
+      name: (k) => (k === 'other' ? 'Other' : known.get(k)[0].name),
+      color: (k) => (k === 'other' ? OTHER : known.get(k)[1]),
+      order: (tot) => [...(tot.other ? ['other'] : []), ...[...known.keys()].filter((id) => tot[id])],
+    };
+  }
   // Accounts in table order, each with its own colour. "Other" is usage from before tracking began,
   // from removed accounts, or from accounts past the fifth colour.
   const known = new Map(S.accounts.filter((a) => a.colorIdx < PAL.length).map((a) => [a.id, a]));
@@ -222,11 +275,15 @@ function seriesFor(byModel) {
 function renderChart() {
   if (!S || !T) return;
   const { out: bins, every, span } = chartBins(range, T.first);
-  const byModel = view === 'models';
+  // The Machines view only makes sense with more than one machine.
+  const hasMachines = multi() || (T.machines || []).some(([, row]) => Object.keys(row).some((k) => k !== 'local'));
+  $('#views [data-view="machines"]').hidden = !hasMachines;
+  const v = view === 'machines' && !hasMachines ? 'accounts' : view;
+  const byModel = v === 'models' ? true : v === 'machines' ? 'machines' : false;
   const ser = seriesFor(byModel);
   for (const b of bins) b.v = {};
   let j = 0;
-  for (const [t, row] of (byModel ? T.models : T.hours) || []) {
+  for (const [t, row] of (byModel === true ? T.models : byModel ? T.machines : T.hours) || []) {
     while (j < bins.length && t >= bins[j].e) j++;
     if (j >= bins.length) break;
     if (t < bins[j].s) continue;
@@ -242,7 +299,7 @@ function renderChart() {
   $('#tokTotal').textContent = T.ready ? compact(sum(totals)) : '–';
   $('#tokSpan').textContent = span;
   document.querySelectorAll('#ranges button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.range === range)));
-  document.querySelectorAll('#views button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === view)));
+  document.querySelectorAll('#views button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === v)));
 
   const plot = $('#plot');
   const max = Math.max(0, ...bins.map((b) => sum(b.v)));
@@ -369,13 +426,21 @@ function openMenu(btn) {
     ['relogin', 'Sign in again'],
     ['remove', 'Remove', 'danger'],
   ].filter(Boolean);
+  showMenu(btn, btn.dataset.menu, a.id, items);
+}
+function openMachineMenu(btn) {
+  const m = machineById(btn.dataset.mmenu);
+  if (!m) return;
+  showMenu(btn, `m:${m.id}`, m.id, [['mrename', 'Rename'], !m.local && ['mremove', 'Remove machine', 'danger']].filter(Boolean));
+}
+function showMenu(btn, key, id, items) {
   menu.innerHTML = items
-    .map(([act, label, cls]) => (cls === 'disabled' ? `<button role="menuitem" disabled>${label}</button>` : `<button role="menuitem" class="${cls || ''}" data-act="${act}" data-id="${a.id}">${label}</button>`))
+    .map(([act, label, cls]) => (cls === 'disabled' ? `<button role="menuitem" disabled>${label}</button>` : `<button role="menuitem" class="${cls || ''}" data-act="${act}" data-id="${id}">${label}</button>`))
     .join('');
   clearTimeout(menuTimer);
   menu.classList.add('shut');
   menu.hidden = false;
-  menuOpen = btn.dataset.menu;
+  menuOpen = key;
   const r = btn.getBoundingClientRect();
   const up = r.bottom + menu.offsetHeight + 8 > innerHeight;
   menu.classList.toggle('up', up);
@@ -428,6 +493,16 @@ document.addEventListener(
     }
     const m = ev.target.closest('[data-menu]');
     if (m) return menuOpen === m.dataset.menu ? closeMenu() : openMenu(m);
+    const mm = ev.target.closest('[data-mmenu]');
+    if (mm) return menuOpen === `m:${mm.dataset.mmenu}` ? closeMenu() : openMachineMenu(mm);
+    const tab = ev.target.closest('[data-machine]');
+    if (tab && !ev.target.closest('input')) {
+      closeMenu();
+      if (tab.dataset.machine === selected().id) return;
+      machineSel = tab.dataset.machine;
+      localStorage.setItem('cam.machine', machineSel);
+      return render();
+    }
     const el = ev.target.closest('[data-act]');
     if (ev.target.closest('#menu') && !el) return; // clicks inside the limit editor
     const { act, id } = el?.dataset || {};
@@ -437,12 +512,24 @@ document.addEventListener(
     if (!el) return;
     try {
       if (act === 'add') return openSheet();
+      if (act === 'add-machine') return openMachineSheet();
       if (act === 'relogin') return openSheet(a);
+      if (act === 'mrename') {
+        const h = document.querySelector(`[data-rename-machine="${id}"]`);
+        return h && startMachineRename(h);
+      }
       if (act === 'switch') {
+        const sel = selected();
         el.disabled = true;
         el.textContent = '…';
-        await call('/api/switch', { id });
-        toast(`Switched to ${nameOf(a)}`);
+        await call('/api/switch', { id, machine: sel.id });
+        toast(multi() ? `${sel.name} switched to ${nameOf(a)}` : `Switched to ${nameOf(a)}`);
+      } else if (act === 'mremove') {
+        const mach = machineById(id);
+        if (!confirm(`Remove ${mach.name}? It stops getting logins from here. Claude Code there keeps its current login until it expires.`)) return;
+        await call('/api/machine/remove', { id });
+        if (machineSel === id) machineSel = 'local';
+        toast(`Removed ${mach.name}`);
       } else if (act === 'refresh') {
         await call('/api/refresh', { id });
         toast('Usage refreshed');
@@ -536,12 +623,18 @@ document.querySelectorAll('[name=warmup]').forEach((el) => (el.onchange = () => 
 let lastTap = 0;
 function startRename(h) {
   const a = S.accounts.find((x) => x.id === h.dataset.rename);
-  if (!a) return;
+  if (a) inlineEdit(h, a.label || '', nameOf(a), 'Account name', (label) => call('/api/account', { id: a.id, label }));
+}
+function startMachineRename(h) {
+  const m = machineById(h.dataset.renameMachine);
+  if (m) inlineEdit(h, m.name, m.name, 'Machine name', (name) => call('/api/machine', { id: m.id, name }));
+}
+function inlineEdit(h, value, placeholder, label, save) {
   renaming = true;
   const input = document.createElement('input');
-  input.value = a.label || '';
-  input.placeholder = nameOf(a);
-  input.setAttribute('aria-label', 'Account name');
+  input.value = value;
+  input.placeholder = placeholder;
+  input.setAttribute('aria-label', label);
   h.replaceWith(input);
   input.focus();
   input.select();
@@ -550,9 +643,9 @@ function startRename(h) {
     if (done) return;
     done = true;
     renaming = false;
-    if (saveIt && input.value.trim() !== (a.label || '')) {
+    if (saveIt && input.value.trim() !== value) {
       try {
-        await call('/api/account', { id: a.id, label: input.value.trim() });
+        await save(input.value.trim());
       } catch (e) {
         toast(e.message);
       }
@@ -562,22 +655,38 @@ function startRename(h) {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') finish(true);
     if (e.key === 'Escape') finish(false);
+    if (e.key === ' ') e.stopPropagation(); // don't press the machine tab underneath
   });
   input.addEventListener('blur', () => finish(true));
 }
+const renameTarget = (e) => {
+  const h = e.target.closest('[data-rename], [data-rename-machine]');
+  // A machine is renamed from its tab once it's selected (the first click selects it).
+  if (h?.dataset.renameMachine && h.dataset.renameMachine !== selected().id) return null;
+  return h;
+};
+const rename = (h) => (h.dataset.rename ? startRename(h) : startMachineRename(h));
 document.addEventListener('dblclick', (e) => {
-  const h = e.target.closest('[data-rename]');
-  if (h) startRename(h);
+  const h = renameTarget(e);
+  if (h) rename(h);
 });
 document.addEventListener('pointerup', (e) => {
-  const h = e.target.closest('[data-rename]');
+  const h = renameTarget(e);
   if (e.pointerType !== 'touch' || !h) return;
   const t = Date.now();
   if (t - lastTap < 350) {
     e.preventDefault();
-    startRename(h);
+    rename(h);
     lastTap = 0;
   } else lastTap = t;
+});
+// Machine tabs are divs (they can hold a rename box): make them keyboard buttons too.
+$('#machines').addEventListener('keydown', (e) => {
+  const tab = e.target.closest('[data-machine]');
+  if (tab && e.target === tab && (e.key === 'Enter' || e.key === ' ')) {
+    e.preventDefault();
+    tab.click();
+  }
 });
 
 // ---------- drag rows to reorder: anywhere with a mouse, by the grip on touch screens ----------
@@ -708,7 +817,7 @@ function updateWait() {
 }
 setInterval(() => sheet.open && updateWait(), 1000);
 
-async function copyText(text) {
+async function copyText(text, box = sheet) {
   try {
     await navigator.clipboard.writeText(text);
     return true;
@@ -716,7 +825,7 @@ async function copyText(text) {
     // Older browsers, or a page served over plain http on a non-localhost address.
     const ta = Object.assign(document.createElement('textarea'), { value: text });
     ta.style.cssText = 'position:fixed;opacity:0';
-    sheet.append(ta);
+    box.append(ta);
     ta.select();
     const ok = document.execCommand('copy');
     ta.remove();
@@ -759,10 +868,78 @@ $('#addFinish').onclick = async (e) => {
   updateWait();
 };
 
+// ---------- add a machine ----------
+// Shows a one-line command with a one-time code. Run on the other machine, it downloads the agent
+// from this page's address, pairs, and installs it as a background service.
+
+const msheet = $('#msheet');
+let pair = null, pairOs = 'unix', pairCount = 0;
+
+function pairCommand() {
+  if (!pair) return '…';
+  const hub = location.origin;
+  return pairOs === 'win'
+    ? `$d="$HOME\\.claude-accounts-agent"; mkdir -Force $d | Out-Null; iwr ${hub}/agent.mjs -OutFile "$d\\agent.mjs"; node "$d\\agent.mjs" setup ${hub} ${pair.code}`
+    : `mkdir -p ~/.claude-accounts-agent && curl -fsSL ${hub}/agent.mjs -o ~/.claude-accounts-agent/agent.mjs && node ~/.claude-accounts-agent/agent.mjs setup ${hub} ${pair.code}`;
+}
+
+function renderPair() {
+  $('#pairCmd').textContent = pairCommand();
+  $('#pairCopy').disabled = !pair;
+  document.querySelectorAll('#osPick button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.os === pairOs)));
+  const left = pair ? pair.expiresAt - Date.now() : 0;
+  $('#pairHint').textContent = !pair ? ' ' : left > 0 ? `Waiting for the machine. The code works once, for ${Math.ceil(left / 60000)} more min.` : 'The code expired. Close this and add the machine again.';
+}
+
+async function openMachineSheet() {
+  pair = null;
+  pairCount = S.machines.length;
+  $('#pairErr').hidden = true;
+  renderPair();
+  msheet.showModal();
+  try {
+    pair = await call('/api/machines/code', {});
+  } catch (e) {
+    $('#pairErr').textContent = e.message;
+    $('#pairErr').hidden = false;
+  }
+  renderPair();
+}
+
+// While the sheet is open, watch for the new machine and jump to it.
+setInterval(async () => {
+  if (!msheet.open || !pair) return;
+  renderPair();
+  try {
+    S = await call('/api/state');
+  } catch {
+    return;
+  }
+  if (S.machines.length > pairCount) {
+    const m = S.machines.at(-1);
+    machineSel = m.id;
+    localStorage.setItem('cam.machine', m.id);
+    msheet.close();
+    toast(`Added ${m.name}`);
+  }
+  render();
+}, 3000);
+
+$('#osPick').onclick = (e) => {
+  const b = e.target.closest('[data-os]');
+  if (!b) return;
+  pairOs = b.dataset.os;
+  renderPair();
+};
+$('#pairCopy').onclick = async () => {
+  if (await copyText(pairCommand(), msheet)) toast('Command copied');
+};
+$('#msheetClose').onclick = () => msheet.close();
+
 // ---------- start ----------
 
 load().then(loadTokens);
-setInterval(() => !document.hidden && !sheet.open && !editing && load(), 15000);
+setInterval(() => !document.hidden && !sheet.open && !msheet.open && !editing && load(), 15000);
 setInterval(() => !document.hidden && loadTokens(), 60000);
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;

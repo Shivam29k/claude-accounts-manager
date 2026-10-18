@@ -7,6 +7,9 @@
 //
 // Counted tokens = input + output + cache writes. Cache reads are kept separately: they
 // are ~40x larger and mostly re-reads of the same context.
+//
+// Other machines' agents count their own transcripts the same way and send half-hour totals per
+// model (addRemote); those are attributed to the account that machine was using at the time.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,11 +19,19 @@ import crypto from 'node:crypto';
 const SLOT = 1800_000;
 const CHUNK = 1 << 20;
 
+export const LOCAL = 'local';
+
 export function createTokenIndex({ projectsDir, file, accountAt }) {
-  let idx = { v: 3, files: {}, hours: {}, models: {}, seen: [] };
+  let idx = { v: 4, files: {}, hours: {}, models: {}, machines: {}, seen: [] };
   try {
     const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (saved?.v === 3) idx = saved;
+    if (saved?.v === 4) idx = saved;
+    else if (saved?.v === 3) {
+      // Before machines existed everything came from this one.
+      saved.machines = {};
+      for (const [h, row] of Object.entries(saved.hours)) saved.machines[h] = { [LOCAL]: Object.values(row).reduce((n, [x]) => n + x, 0) };
+      idx = { ...saved, v: 4 };
+    }
   } catch {}
   const seen = new Set(idx.seen);
   let scanning = null;
@@ -66,6 +77,10 @@ export function createTokenIndex({ projectsDir, file, accountAt }) {
     const v = (bucket[accountAt(ts)] ||= [0, 0]);
     v[0] += n;
     v[1] += cr;
+    if (n) {
+      const mb = (idx.machines[h] ||= {});
+      mb[LOCAL] = (mb[LOCAL] || 0) + n;
+    }
     if (n && m.model && m.model !== '<synthetic>') {
       const mb = (idx.models[h] ||= {});
       mb[m.model] = (mb[m.model] || 0) + n;
@@ -137,6 +152,28 @@ export function createTokenIndex({ projectsDir, file, accountAt }) {
   }
 
   return {
+    // slots: [[slotStartMs, { model: tokens }]] from a machine's agent.
+    // accountAtOn(ts): the account that machine used at ts.
+    addRemote(machineId, slots, accountAtOn) {
+      for (const [t, row] of slots) {
+        const h = Math.floor(t / SLOT) * SLOT;
+        let total = 0;
+        for (const [model, n] of Object.entries(row)) {
+          total += n;
+          if (model && model !== '<synthetic>') {
+            const mb = (idx.models[h] ||= {});
+            mb[model] = (mb[model] || 0) + n;
+          }
+        }
+        if (!total) continue;
+        const v = ((idx.hours[h] ||= {})[accountAtOn(h + SLOT / 2)] ||= [0, 0]);
+        v[0] += total;
+        const mb = (idx.machines[h] ||= {});
+        mb[machineId] = (mb[machineId] || 0) + total;
+        dirty = true;
+      }
+      persist();
+    },
     scan() {
       scanning ??= scanOnce().finally(() => (scanning = null));
       return scanning;
@@ -144,7 +181,7 @@ export function createTokenIndex({ projectsDir, file, accountAt }) {
     get ready() {
       return ready;
     },
-    // Half-hour buckets from `from` on, by account and by model id, plus the first slot on record.
+    // Half-hour buckets from `from` on, by account, model id and machine, plus the first slot on record.
     series(from = 0) {
       const out = [];
       let first = null;
@@ -157,8 +194,8 @@ export function createTokenIndex({ projectsDir, file, accountAt }) {
         out.push([t, row]);
       }
       out.sort((a, b) => a[0] - b[0]);
-      const models = Object.entries(idx.models).map(([k, v]) => [Number(k), v]).filter(([t]) => t >= from).sort((a, b) => a[0] - b[0]);
-      return { hours: out, models, first, ready };
+      const rows = (o) => Object.entries(o).map(([k, v]) => [Number(k), v]).filter(([t]) => t >= from).sort((a, b) => a[0] - b[0]);
+      return { hours: out, models: rows(idx.models), machines: rows(idx.machines), first, ready };
     },
   };
 }

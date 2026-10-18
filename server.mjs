@@ -15,6 +15,7 @@ import { createStore } from './src/store.mjs';
 import { createTokenIndex } from './src/tokens.mjs';
 import { createWarmupRunner } from './src/warmup.mjs';
 
+const here = path.dirname(fileURLToPath(import.meta.url));
 const config = loadConfig();
 fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
 fs.chmodSync(config.dataDir, 0o700);
@@ -25,17 +26,18 @@ console.log(`requests mimic Claude Code ${versions.cli} (token endpoint: axios/$
 const store = createStore(path.join(config.dataDir, 'state.json'));
 const files = createClaudeFiles({ claudeDir: config.claudeDir, claudeJson: config.claudeJson, backupDir: path.join(config.dataDir, 'backups') });
 const warmup = createWarmupRunner({ claudeBin: config.claudeBin, workDir: path.join(config.dataDir, 'warmup') });
+const tokens = createTokenIndex({
+  projectsDir: path.join(config.claudeDir, 'projects'),
+  file: path.join(config.dataDir, 'tokens.json'),
+  accountAt: store.accountAt,
+});
 const manager = createManager({
   store,
   files,
   anthropic: createAnthropicClient(versions),
   warmup,
   checkHealth: () => checkHealth({ ...config, ignorePids: warmup.pids }),
-});
-const tokens = createTokenIndex({
-  projectsDir: path.join(config.claudeDir, 'projects'),
-  file: path.join(config.dataDir, 'tokens.json'),
-  accountAt: store.accountAt,
+  remoteTokens: (machineId, slots) => tokens.addRemote(machineId, slots, (ts) => store.accountAtOn(machineId, ts)),
 });
 
 await manager.start();
@@ -43,7 +45,8 @@ await manager.start();
 const server = createHttpServer({
   manager,
   tokens,
-  publicDir: path.join(path.dirname(fileURLToPath(import.meta.url)), 'public'),
+  publicDir: path.join(here, 'public'),
+  agentFile: path.join(here, 'agent', 'agent.mjs'),
   allowedLogins: config.allowedLogins,
 });
 server.listen(config.port, config.host, () => console.log(`Claude Accounts Manager on http://${config.host}:${config.port} (data in ${config.dataDir})`));

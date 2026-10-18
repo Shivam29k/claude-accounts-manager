@@ -1,7 +1,9 @@
 // The account manager: keeps saved logins fresh, reads their usage, and swaps the one Claude
-// Code uses, by hand or automatically when the active account nears its limit.
+// Code uses, by hand or automatically when the active account nears its limit. It does that for
+// this machine directly, and for other machines through their agents (see "other machines").
 
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { accountPart } from './claude-files.mjs';
 import { accountKey, buildAuthorizeUrl, oauthAccountFromProfile, oauthFromTokenResponse, parsePastedCode, profileSummary } from './anthropic.mjs';
 import { extraUsageOn, loadPct, meters } from './usage.mjs';
@@ -10,8 +12,16 @@ import { sessionIdle } from './warmup.mjs';
 
 const MIN = 60_000;
 
+const LOCAL = 'local'; // this machine's id in machine lists
+const ONLINE_MS = 90_000; // agents check in at least every ~30 seconds
+const PAIR_TTL = 15 * MIN;
+const sha = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
+// The token fingerprint agents and the hub compare to see whether a machine has the right login.
+export const tokenHash = (t) => (t ? sha(t).slice(0, 16) : null);
+
 // warmup: optional { run(accessToken) } that sends one message as that account (see warmup.mjs).
-export function createManager({ store, files, anthropic, warmup = null, checkHealth = () => [] }) {
+// remoteTokens: optional (machineId, slots) => void, receives token counts reported by agents.
+export function createManager({ store, files, anthropic, warmup = null, checkHealth = () => [], remoteTokens = () => {} }) {
   const { state } = store;
   const lock = createLock();
   const name = store.nameOf;
@@ -20,6 +30,16 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
   const accLoad = (acc) => loadPct(meters(acc.usage?.data), state.settings.watch);
   // Each account can have its own switch-away limit; otherwise the global threshold applies.
   const limitOf = (acc) => (Number.isFinite(acc?.threshold) ? acc.threshold : state.settings.threshold);
+
+  const machineOf = (id) => state.machines.find((m) => m.id === id);
+  const machineName = (id) => (id === LOCAL ? state.localName || os.hostname() : machineOf(id)?.name || 'removed machine');
+  const online = (m) => now() - (m.lastSeen || 0) < ONLINE_MS;
+  const activeOn = (mid) => (mid === LOCAL ? state.activeId : machineOf(mid)?.activeId ?? null);
+  const usedRemotely = (acc) => state.machines.some((m) => m.activeId === acc.id);
+  // In use right now: live here, or on another machine that's checking in.
+  const inUse = (acc) => acc.id === state.activeId || state.machines.some((m) => m.activeId === acc.id && online(m));
+  // "on MacBook" in messages, once there is more than one machine.
+  const onMachine = (mid) => (state.machines.length ? ` on ${machineName(mid)}` : '');
 
   function applyProfile(acc, profile) {
     Object.assign(acc, profileSummary(profile));
@@ -82,12 +102,22 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
 
   // ---------- tokens ----------
 
-  // A usable access token. Claude Code refreshes the live account itself, so we only refresh
-  // that one once it has already expired (nothing is using it then) and write the result back.
+  // How long before expiry to refresh. Claude Code refreshes this machine's live account itself,
+  // so normally we refresh that one only once it has expired (nothing is using it then) and write
+  // the result back. Other machines get access tokens only and can't refresh, so an account they
+  // use is renewed well ahead of time, and if it is also live here, still before Claude Code's own
+  // refresh window (its last 5 minutes).
+  function refreshMargin(acc) {
+    const remote = usedRemotely(acc);
+    if (acc.id === state.activeId) return remote ? 10 * MIN : -MIN;
+    return remote ? 30 * MIN : 5 * MIN;
+  }
+
+  // A usable access token, refreshed first if needed.
   async function validToken(acc) {
     const o = acc.creds?.claudeAiOauth;
     if (!o?.refreshToken) throw Object.assign(new Error('no refresh token'), { fatal: true });
-    const margin = acc.id === state.activeId ? -MIN : 5 * MIN;
+    const margin = refreshMargin(acc);
     if (o.expiresAt && o.expiresAt > now() + margin) return o.accessToken;
     return refreshAccount(acc);
   }
@@ -153,8 +183,8 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
       if (!e.fatal) acc.usageError = e.message;
       if (!quiet) console.error(`usage check for ${name(acc)} failed:`, e.message);
     } finally {
-      // The live account is checked more often, and every minute once it nears the threshold.
-      const live = acc.id === state.activeId;
+      // Accounts in use are checked more often, and every minute once they near their limit.
+      const live = inUse(acc);
       const pct = accLoad(acc);
       const near = live && pct !== null && pct >= limitOf(acc) - 15;
       const every = near ? 60 : live ? state.settings.pollActiveSec : state.settings.pollIdleSec;
@@ -183,51 +213,95 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
       state.activeId = target.id;
       state.liveUnknown = null;
       pointClaudeJsonAt(target);
-      store.log('switch', `Switched ${from ? `from ${name(from)} ` : ''}to ${name(target)}${reason === 'manual' ? '' : `. ${reason}`}`, {
-        from: from?.id ?? null,
-        fromName: from ? name(from) : null,
-        to: target.id,
-        toName: name(target),
-        ...meta,
-      });
+      logSwitch(LOCAL, from, target, reason, meta);
       target.nextUsageAt = 0;
       store.save();
       return { ok: true };
     });
   }
 
-  let lastStuck = '';
+  function logSwitch(mid, from, target, reason, meta) {
+    store.log('switch', `Switched${onMachine(mid)} ${from ? `from ${name(from)} ` : ''}to ${name(target)}${reason === 'manual' ? '' : `. ${reason}`}`, {
+      from: from?.id ?? null,
+      fromName: from ? name(from) : null,
+      to: target.id,
+      toName: name(target),
+      machine: mid,
+      machineName: machineName(mid),
+      ...meta,
+    });
+  }
+
+  function setMachineAccount(m, id) {
+    m.activeId = id;
+    (m.timeline ||= []).push({ ts: now(), id });
+  }
+
+  // Switch another machine: its agent picks up the new login at its next check-in (within seconds).
+  function switchMachine(mid, id, reason = 'manual', meta = {}) {
+    if (!mid || mid === LOCAL) return switchTo(id, reason, meta);
+    return lock(async () => {
+      const m = machineOf(mid);
+      if (!m) throw new AppError('Unknown machine');
+      const target = store.byId(id);
+      if (!target) throw new AppError('Unknown account');
+      if (target.id === m.activeId) return { ok: true, already: true };
+      if (target.authError) throw new AppError(`${name(target)} needs to sign in again first`);
+      const from = store.byId(m.activeId);
+      setMachineAccount(m, target.id);
+      await validToken(target).catch(() => {}); // fresh token ready for the agent
+      logSwitch(mid, from, target, reason, meta);
+      target.nextUsageAt = 0;
+      store.save();
+      return { ok: true };
+    });
+  }
+
+  // Each machine leaves its account at that account's limit. Machines on the same account share
+  // its limits, so when there is a choice, accounts no other machine is using come first.
+  const lastStuck = new Map();
   async function maybeAutoSwitch() {
+    if (!state.settings.autoSwitch) return;
+    for (const mid of [LOCAL, ...state.machines.map((m) => m.id)]) await autoSwitchMachine(mid);
+  }
+
+  async function autoSwitchMachine(mid) {
     const s = state.settings;
-    const active = store.byId(state.activeId);
-    if (!s.autoSwitch || !active) return;
+    const active = store.byId(activeOn(mid));
+    if (!active) return;
     const pct = accLoad(active);
     const limit = limitOf(active);
     if (pct === null || pct < limit) {
-      lastStuck = '';
+      lastStuck.delete(mid);
       return;
     }
-    if (now() - (state.lastAutoSwitchAt || 0) < s.cooldownSec * 1000) return;
+    const m = mid === LOCAL ? state : machineOf(mid);
+    if (now() - (m.lastAutoSwitchAt || 0) < s.cooldownSec * 1000) return;
     const pool = state.accounts.filter((a) => a.id !== active.id && !a.excluded && !a.authError);
     for (const a of pool) if (!a.usage || now() - a.usage.fetchedAt > 5 * MIN) await pollUsage(a, { quiet: true });
     // A candidate must be under its own limit; "most room" means the most headroom below it.
     const candidates = pool.map((a) => ({ a, pct: accLoad(a), room: limitOf(a) - accLoad(a) })).filter((x) => x.pct !== null && x.room > 0);
     if (!candidates.length) {
       const key = `${active.id}:${pct}`;
-      if (key !== lastStuck) store.log('auto', `${name(active)} is at ${pct}% and every other account is past its limit`, { kind: 'stuck', id: active.id, name: name(active), pct });
-      lastStuck = key;
+      if (key !== lastStuck.get(mid)) {
+        store.log('auto', `${name(active)} is at ${pct}%${onMachine(mid)} and every other account is past its limit`, { kind: 'stuck', id: active.id, name: name(active), pct, machine: mid, machineName: machineName(mid) });
+      }
+      lastStuck.set(mid, key);
       return;
     }
+    const taken = new Set([state.activeId, ...state.machines.filter(online).map((x) => x.activeId)]);
+    const free = candidates.filter((x) => !taken.has(x.a.id));
+    const choices = free.length ? free : candidates;
     let pick;
     if (s.strategy === 'priority') {
       const order = state.accounts;
       const start = order.indexOf(active);
-      for (let i = 1; i <= order.length && !pick; i++) pick = candidates.find((x) => x.a === order[(start + i) % order.length]);
+      for (let i = 1; i <= order.length && !pick; i++) pick = choices.find((x) => x.a === order[(start + i) % order.length]);
     } else {
-      pick = candidates.sort((x, y) => y.room - x.room)[0];
+      pick = choices.sort((x, y) => y.room - x.room)[0];
     }
-    state.lastAutoSwitchAt = now();
-    await switchTo(pick.a.id, `Automatic: ${name(active)} reached ${pct}%, past its ${limit}% limit`, { auto: true, pct, limit });
+    m.lastAutoSwitchAt = now();
+    await switchMachine(mid, pick.a.id, `Automatic: ${name(active)} reached ${pct}%, past its ${limit}% limit`, { auto: true, pct, limit });
   }
 
   // ---------- auto-start 5-hour windows ----------
@@ -280,7 +354,7 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
     return { url: buildAuthorizeUrl({ challenge, state: st, email }) };
   }
 
-  async function upsertAccount(accountKeys, profile, label) {
+  async function upsertAccount(accountKeys, profile, label, via = null) {
     let acc = state.accounts.find((a) => a.key === accountKey(profile));
     const isNew = !acc;
     if (isNew) {
@@ -293,10 +367,11 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
     acc.creds = accountKeys;
     acc.authError = null;
     acc.nextUsageAt = 0;
-    store.log('account', isNew ? `Added ${name(acc)}${acc.orgName ? ` from ${acc.orgName}` : ''}` : `Signed in again to ${name(acc)}`, {
+    store.log('account', isNew ? `Added ${name(acc)}${acc.orgName ? ` from ${acc.orgName}` : ''}${via ? `, signed in on ${machineName(via)}` : ''}` : `Signed in again to ${name(acc)}`, {
       kind: isNew ? 'added' : 'relogin',
       id: acc.id,
       name: name(acc),
+      ...(via && { machine: via, machineName: machineName(via) }),
     });
     return acc;
   }
@@ -351,6 +426,166 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
     });
   }
 
+  // ---------- other machines ----------
+  // Each other machine runs the agent (agent/agent.mjs). It checks in with POST /agent/sync, gets
+  // the access token of the account it should use, and writes it where Claude Code reads it there.
+  // Refresh tokens never leave this hub: machines get access tokens only, so their Claude Code
+  // can't refresh (and rotate) a login behind the hub's back. The hub renews them ahead of expiry.
+
+  const clean = (v, max) => String(v ?? '').replace(/[\u0000-\u001f]/g, '').trim().slice(0, max);
+
+  // A one-time code for adding a machine, valid for 15 minutes.
+  function createPairCode() {
+    const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const raw = [...crypto.randomBytes(8)].map((b) => abc[b % abc.length]).join('');
+    const code = `${raw.slice(0, 4)}-${raw.slice(4)}`;
+    state.pairCodes = state.pairCodes.filter((c) => now() - c.at < PAIR_TTL).concat({ hash: sha(raw), at: now() }).slice(-5);
+    store.save();
+    return { code, expiresAt: now() + PAIR_TTL };
+  }
+
+  let pairFails = { n: 0, since: 0 };
+  function pairMachine({ code, name: wanted, os: osName, hostname }) {
+    return lock(async () => {
+      if (now() - pairFails.since > 10 * MIN) pairFails = { n: 0, since: now() };
+      if (pairFails.n >= 20) throw new AppError('Too many wrong codes. Wait a few minutes.');
+      const raw = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const hit = state.pairCodes.find((c) => c.hash === sha(raw) && now() - c.at < PAIR_TTL);
+      if (!hit) {
+        pairFails.n++;
+        throw new AppError('That code is wrong or expired. Get a new one from "Add machine".');
+      }
+      state.pairCodes = state.pairCodes.filter((c) => c !== hit);
+      const token = b64url(crypto.randomBytes(32));
+      const m = {
+        id: crypto.randomBytes(6).toString('hex'),
+        name: clean(wanted, 40) || clean(hostname, 40) || 'Machine',
+        os: clean(osName, 20),
+        hostname: clean(hostname, 100),
+        tokenHash: sha(token),
+        pairedAt: now(),
+        lastSeen: 0,
+        activeId: null,
+        timeline: [],
+        tokenSeq: 0,
+      };
+      state.machines.push(m);
+      store.log('machine', `Added machine ${m.name}`, { kind: 'machineAdded', machine: m.id, machineName: m.name });
+      store.save();
+      return { machineId: m.id, name: m.name, token };
+    });
+  }
+
+  const machineByToken = (token) => (token ? state.machines.find((m) => m.tokenHash === sha(token)) : null);
+
+  // What a machine should be signed in with: the account's access token and profile, never its
+  // refresh token. creds is null when the machine has no account or the account is signed out.
+  function machineLogin(m) {
+    const acc = store.byId(m.activeId);
+    const o = acc?.creds?.claudeAiOauth;
+    if (!acc || acc.authError || !o?.accessToken) return { account: acc ? { id: acc.id, name: name(acc), email: acc.email } : null, creds: null, hash: null };
+    const { refreshToken, refreshTokenExpiresAt, ...rest } = o;
+    return {
+      account: { id: acc.id, name: name(acc), email: acc.email },
+      creds: { claudeAiOauth: rest },
+      oauthAccount: acc.oauthAccount || null,
+      hash: tokenHash(o.accessToken),
+    };
+  }
+
+  // A login on that machine the hub didn't put there (an existing login when the agent starts, or
+  // `claude /login` run there): the machine now uses that account, saved here if it's new.
+  const foreignSeen = new Map(); // machine id -> { token, at }
+  async function adoptForeign(m, creds) {
+    const o = creds?.claudeAiOauth;
+    if (!o?.accessToken) return;
+    const seen = foreignSeen.get(m.id);
+    if (seen?.token === o.accessToken && now() - seen.at < MIN) return; // asked recently
+    foreignSeen.set(m.id, { token: o.accessToken, at: now() });
+    let profile;
+    try {
+      profile = await anthropic.fetchProfile(o.accessToken);
+    } catch (e) {
+      console.error(`could not identify the login on ${m.name}:`, e.message);
+      return;
+    }
+    await lock(async () => {
+      let acc = state.accounts.find((a) => a.key === accountKey(profile));
+      if (!acc) {
+        if (!o.refreshToken) return; // can't be kept alive here; leave it alone
+        acc = await upsertAccount({ claudeAiOauth: o }, profile, '', m.id);
+        pollUsage(acc).catch(() => {});
+      } else if (acc.authError && o.refreshToken) {
+        acc.creds = { claudeAiOauth: o }; // the hub's copy was signed out; this one works
+        acc.authError = null;
+        acc.nextUsageAt = 0;
+        store.log('account', `Signed in again to ${name(acc)} on ${m.name}`, { kind: 'relogin', id: acc.id, name: name(acc), machine: m.id, machineName: m.name });
+      }
+      if (m.activeId !== acc.id) {
+        if (m.activeId) store.log('live', `${m.name} was signed in to ${name(acc)} outside the app`, { kind: 'external', id: acc.id, name: name(acc), machine: m.id, machineName: m.name });
+        setMachineAccount(m, acc.id);
+      }
+      foreignSeen.delete(m.id);
+      store.save();
+    });
+  }
+
+  function validSlots(list) {
+    if (!Array.isArray(list)) return [];
+    const out = [];
+    for (const item of list.slice(0, 2000)) {
+      if (!Array.isArray(item) || !Number.isFinite(item[0]) || !item[1] || typeof item[1] !== 'object') continue;
+      const row = {};
+      for (const [k, v] of Object.entries(item[1]).slice(0, 20)) if (Number.isFinite(v) && v > 0 && v < 1e11) row[clean(k, 100)] = Math.round(v);
+      out.push([item[0], row]);
+    }
+    return out;
+  }
+
+  // One check-in from a machine's agent. Returns the login it should have.
+  async function agentSync(m, b = {}) {
+    m.lastSeen = now();
+    if (b.os) m.os = clean(b.os, 20);
+    if (b.hostname) m.hostname = clean(b.hostname, 100);
+    m.agentVersion = clean(b.agentVersion, 20);
+    m.claudeVersion = clean(b.claudeVersion, 40);
+    m.warnings = Array.isArray(b.warnings) ? b.warnings.slice(0, 10).map((w) => clean(w, 300)) : [];
+    m.signedIn = b.live !== 'none';
+    if (b.foreign) await adoptForeign(m, b.foreign);
+    const t = b.tokens;
+    if (t && Number.isInteger(t.seq) && t.seq > (m.tokenSeq || 0)) {
+      remoteTokens(m.id, validSlots(t.slots));
+      m.tokenSeq = t.seq;
+    }
+    const acc = store.byId(m.activeId);
+    if (acc && !acc.authError) await validToken(acc).catch(() => {});
+    store.save();
+    return { ...machineLogin(m), machine: { id: m.id, name: m.name }, ackSeq: m.tokenSeq || 0 };
+  }
+
+  const renameMachine = ({ id, name: newName }) =>
+    lock(async () => {
+      if (id === LOCAL) state.localName = clean(newName, 40);
+      else {
+        const m = machineOf(id);
+        if (!m) throw new AppError('Unknown machine');
+        m.name = clean(newName, 40) || m.hostname || m.name;
+      }
+      store.save();
+      return { ok: true };
+    });
+
+  // Forget a machine: its agent is locked out. Its current login keeps working there until it expires.
+  const removeMachine = (id) =>
+    lock(async () => {
+      const m = machineOf(id);
+      if (!m) throw new AppError('Unknown machine');
+      state.machines = state.machines.filter((x) => x !== m);
+      store.log('machine', `Removed machine ${m.name}`, { kind: 'machineRemoved', machine: m.id, machineName: m.name });
+      store.save();
+      return { ok: true };
+    });
+
   // ---------- small edits ----------
 
   const updateAccount = ({ id, label, excluded, warmup: wantWarmup, threshold }) =>
@@ -388,6 +623,7 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
       if (!a) throw new AppError('Unknown account');
       state.accounts = state.accounts.filter((x) => x !== a);
       if (state.activeId === a.id) state.activeId = null;
+      for (const m of state.machines) if (m.activeId === a.id) setMachineAccount(m, null);
       store.log('account', `Removed ${name(a)}`, { kind: 'removed', id: a.id, name: name(a) });
       store.save();
       return { ok: true };
@@ -434,6 +670,8 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
         const o = a.creds?.claudeAiOauth;
         if (a.id !== state.activeId && !a.authError && o?.refreshTokenExpiresAt && o.refreshTokenExpiresAt - now() < 7 * 24 * 60 * MIN) await refreshAccount(a).catch(() => {});
       }
+      // Other machines can't refresh their logins, so keep every account they use ahead of expiry.
+      for (const a of state.accounts) if (usedRemotely(a) && !a.authError) await validToken(a).catch(() => {});
       await maybeAutoSwitch();
       await maybeWarmup();
       if (now() - health.at > MIN) health = { warnings: checkHealth(), at: now() };
@@ -463,6 +701,25 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
       signinBlockedUntil: signinBlock.until > now() ? signinBlock.until : 0,
       health: health.warnings,
       events: state.events.slice(0, 60),
+      // This machine first, then the ones running the agent. activeId: the account each one uses.
+      machines: [
+        { id: LOCAL, name: machineName(LOCAL), os: process.platform, local: true, activeId: state.activeId, online: true, signedIn: !!state.activeId || !!state.liveUnknown },
+        ...state.machines.map((m) => ({
+          id: m.id,
+          name: m.name,
+          os: m.os,
+          hostname: m.hostname,
+          local: false,
+          activeId: m.activeId,
+          online: online(m),
+          lastSeen: m.lastSeen || null,
+          pairedAt: m.pairedAt,
+          signedIn: m.signedIn ?? null,
+          agentVersion: m.agentVersion || null,
+          claudeVersion: m.claudeVersion || null,
+          warnings: m.warnings || [],
+        })),
+      ],
       accounts: state.accounts.map((a) => {
         const ms = meters(a.usage?.data);
         return {
@@ -501,7 +758,15 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
     tick,
     publicState,
     switchTo,
+    switchMachine,
     maybeAutoSwitch,
+    createPairCode,
+    pairMachine,
+    machineByToken,
+    machineLogin,
+    agentSync,
+    renameMachine,
+    removeMachine,
     startLogin,
     finishLogin,
     importLive,

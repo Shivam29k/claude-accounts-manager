@@ -52,11 +52,13 @@
   </section>
   </div></div>
 
+  <nav class="machines" id="machines" aria-label="Machines" hidden></nav>
+
   <section class="panel accounts" id="accounts">
     <div class="tr th cap" id="thead"></div>
     <div id="rows"></div>
     <div class="tfoot">
-      <button class="link" data-act="add">+ Add account</button>
+      <div class="tf-l"><button class="link" data-act="add">+ Add account</button><button class="link" data-act="add-machine">+ Add machine</button></div>
       <button class="link" id="refreshAll"><span id="checked">Checked</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button>
     </div>
   </section>
@@ -65,11 +67,11 @@
     <div class="ch-head">
       <div>
         <div class="cap" id="tokTitle">Tokens</div>
-        <div class="hero" title="Input, output and cache-write tokens from Claude Code on this server. Cache reads aren’t counted."><b id="tokTotal">–</b><span id="tokSpan"></span></div>
+        <div class="hero" title="Input, output and cache-write tokens from Claude Code on your machines. Cache reads aren’t counted."><b id="tokTotal">–</b><span id="tokSpan"></span></div>
       </div>
       <div class="ctrls">
         <div class="seg" id="views" aria-label="Break down by">
-          <button data-view="accounts">Accounts</button><button data-view="models">Models</button>
+          <button data-view="accounts">Accounts</button><button data-view="models">Models</button><button data-view="machines" hidden>Machines</button>
         </div>
         <div class="seg" id="ranges" aria-label="Time range">
           <button data-range="24h">24H</button><button data-range="7d">7D</button><button data-range="30d">30D</button><button data-range="all">All</button>
@@ -106,6 +108,18 @@
   </div>
   <div class="note" id="addWait" hidden></div>
   <div class="note bad" id="addErr" hidden></div>
+</dialog>
+
+<dialog id="msheet" aria-labelledby="msheetTitle">
+  <div class="sh-head"><h2 id="msheetTitle">Add a machine</h2><button class="dots" id="msheetClose" aria-label="Close">✕</button></div>
+  <p class="hint">Run this on the other machine. It needs Node.js 20+ and Claude Code, and has to be on your tailnet.</p>
+  <div class="seg os" id="osPick" aria-label="System">
+    <button data-os="unix" aria-pressed="true">macOS / Linux</button><button data-os="win" aria-pressed="false">Windows</button>
+  </div>
+  <pre class="cmd" id="pairCmd">…</pre>
+  <button class="btn primary signin" id="pairCopy" disabled>Copy command</button>
+  <p class="hint" id="pairHint">&nbsp;</p>
+  <div class="note bad" id="pairErr" hidden></div>
 </dialog>
 
 <script type="module" src="/app.js"></script>

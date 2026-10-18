@@ -11,14 +11,15 @@ If you have more than one Claude subscription, you know the routine. An account 
 - Save all your Claude logins (Pro, Max, Team). Sign in to each one once.
 - See 5-hour, weekly and per-model usage for every account, with time left until reset.
 - Switch accounts with one click. Running Claude Code sessions continue on the new account, no restart.
+- Use the same accounts on all your machines (macOS, Linux, Windows), each switched on its own, from one dashboard.
 - Auto-switch when the active account reaches a limit you set, globally or per account.
 - Auto-start idle accounts' 5-hour windows so they reset sooner.
-- Token usage chart per account or per model.
+- Token usage chart per account, model or machine.
 - Warnings when something would bypass your subscription, such as an API key in the environment or extra usage turned on.
 
 ## Install
 
-Needs Linux or WSL, Node.js 20+ and Claude Code. No npm dependencies. macOS isn't supported, because Claude Code keeps its login in the Keychain there.
+The app runs on Linux or WSL with Node.js 20+ and Claude Code. No npm dependencies. To use your accounts on a Mac or a Windows PC too, add it as another machine (below).
 
 ```sh
 git clone https://github.com/Shivam29k/claude-accounts-manager.git
@@ -55,12 +56,22 @@ Then open `https://<machine>.<tailnet>.ts.net:10001` and add it to your home scr
 2. Sign in with the account you want to add and approve. If claude.ai is already signed in as someone else, use a private window.
 3. Paste the code Claude shows and click **Add account**.
 
+## More machines
+
+Run the app on one always-on machine (the hub), then add your other machines to it. They need Node.js 20+, Claude Code, and to be on the same tailnet.
+
+1. Click **+ Add machine** and copy the command (macOS/Linux or Windows).
+2. Run it on the other machine. It downloads a small agent from the hub, pairs with a one-time code and installs itself as a background service (systemd, launchd or a logon task).
+3. The machine shows up as a tab above the table. Pick a tab to see and switch what that machine uses.
+
+Whatever account the machine was signed in to is kept: it's added to the hub if it's new. Each machine auto-switches on its own, preferring accounts no other machine is using, since machines on one account share its limits. To stop, run `node ~/.claude-accounts-agent/agent.mjs uninstall` there.
+
 ## Good to know
 
 - **Auto-switch options** are behind the arrow next to the slider. Pick which limits count, and whether to go to the account with the most room or the next one in your list. Drag rows to reorder.
 - **Per-account settings** live in each row's ⋯ menu: a custom limit, skipping the account in auto-switch, auto-start, sign in again, remove.
 - **Auto-start** sends `hi` on Haiku through the Claude Code CLI, using only that account's token. It costs a few tokens and leaves your live login alone. At most once per 15 minutes per account.
-- **The token chart** counts input, output and cache-write tokens from Claude Code's transcripts, on this machine only. Usage from before you installed the app shows as "Other".
+- **The token chart** counts input, output and cache-write tokens from Claude Code's transcripts on every machine. Usage from before a machine was added shows as "Other" in the Accounts view.
 - **A session didn't switch?** It's probably using an API key or another config directory. The app lists those at the top of the page.
 - **Sign-in rate-limited?** Wait for the countdown, then try once with a fresh link. Retrying sooner can extend the block.
 
@@ -81,9 +92,11 @@ Environment variables. Everything else is set in the UI.
 
 Claude Code on Linux keeps its login in `~/.claude/.credentials.json`, and running sessions reload that file when it changes. The app keeps each account's tokens, refreshes them, and on a switch writes the chosen account's login into that file and `~/.claude.json`, leaving everything else in them as it was. Sign-in uses the same OAuth flow as `claude /login`, and usage comes from the endpoint behind Claude Code's `/usage`.
 
+Other machines get access tokens only. The hub keeps every refresh token and renews logins well before they expire, so no machine can refresh a shared login behind another's back (refresh tokens are single-use). The agent writes the login where Claude Code reads it: the Keychain on macOS, `.credentials.json` elsewhere. It long-polls the hub, so a switch lands within seconds, and running sessions pick it up by themselves.
+
 ## Security
 
-Saved logins are OAuth tokens stored in `~/.claude-accounts-manager/state.json` (mode 600), the same way Claude Code stores its own on Linux. The page never receives tokens, and the API rejects requests from other websites.
+Saved logins are OAuth tokens stored in `~/.claude-accounts-manager/state.json` (mode 600), the same way Claude Code stores its own on Linux. The page never receives tokens, and the API rejects requests from other websites. Each machine authenticates with its own token (only a hash is stored on the hub); removing the machine in the dashboard locks its agent out.
 
 ## Contributing
 

@@ -27,16 +27,20 @@ function sendJson(res, code, body) {
   res.end(JSON.stringify(body));
 }
 
-async function readBody(req) {
+async function readBody(req, max = 100_000) {
   let s = '';
   for await (const c of req) {
     s += c;
-    if (s.length > 100_000) throw new Error('body too large');
+    if (s.length > max) throw new Error('body too large');
   }
   return s ? JSON.parse(s) : {};
 }
 
-export function createHttpServer({ manager, tokens, publicDir, allowedLogins = [] }) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// agentFile: the agent script other machines download (GET /agent.mjs).
+// agentWaitMs: how long a check-in may wait for a change before answering (long poll).
+export function createHttpServer({ manager, tokens, publicDir, agentFile = null, allowedLogins = [], agentWaitMs = 25_000 }) {
   const routes = {
     'GET /api/state': () => manager.publicState(),
     'GET /api/tokens': (_b, q) => {
@@ -44,7 +48,7 @@ export function createHttpServer({ manager, tokens, publicDir, allowedLogins = [
       // One extra day so the browser can cut day boundaries in its own time zone.
       return { now: Date.now(), ...tokens.series(span ? Date.now() - span - 86400_000 : 0) };
     },
-    'POST /api/switch': (b) => manager.switchTo(b.id),
+    'POST /api/switch': (b) => manager.switchMachine(b.machine, b.id),
     'POST /api/login/start': (b) => manager.startLogin(b),
     'POST /api/login/finish': (b) => manager.finishLogin(b),
     'POST /api/import-live': (b) => manager.importLive(b.label),
@@ -53,7 +57,32 @@ export function createHttpServer({ manager, tokens, publicDir, allowedLogins = [
     'POST /api/order': (b) => manager.reorder(b.ids),
     'POST /api/refresh': (b) => manager.refreshUsage(b.id),
     'POST /api/settings': (b) => manager.updateSettings(b),
+    'POST /api/machines/code': () => manager.createPairCode(),
+    'POST /api/machine': (b) => manager.renameMachine(b),
+    'POST /api/machine/remove': (b) => manager.removeMachine(b.id),
   };
+
+  // Agents on other machines. They authenticate with the token they got when pairing, sent as
+  // "Authorization: Bearer <token>" (a header web pages can't send cross-site either).
+  async function agentRoute(req, res, url) {
+    const body = await readBody(req, 2_000_000);
+    if (url.pathname === '/agent/pair') return sendJson(res, 200, await manager.pairMachine(body));
+    const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    let m = manager.machineByToken(token);
+    if (!m) return sendJson(res, 401, { error: 'This machine was removed from the hub. Add it again.' });
+    let out = await manager.agentSync(m, body);
+    // Long poll: if the machine already has the right login, hold the answer until that changes,
+    // so a switch reaches it within a second or two.
+    const wait = Math.min(agentWaitMs, Math.max(0, Number(url.searchParams.get('wait')) * 1000 || 0));
+    const until = Date.now() + wait;
+    while (Date.now() < until && (!out.creds || out.hash === body.have) && !req.socket.destroyed) {
+      await sleep(1000);
+      m = manager.machineByToken(token);
+      if (!m) return sendJson(res, 401, { error: 'This machine was removed from the hub. Add it again.' });
+      out = { ...out, ...manager.machineLogin(m) };
+    }
+    sendJson(res, 200, out);
+  }
 
   return http.createServer(async (req, res) => {
     try {
@@ -69,6 +98,11 @@ export function createHttpServer({ manager, tokens, publicDir, allowedLogins = [
         res.writeHead(200, { 'Content-Type': type, 'Cache-Control': file === 'index.html' ? 'no-store' : 'no-cache', 'X-Content-Type-Options': 'nosniff' });
         return res.end(fs.readFileSync(path.join(publicDir, file)));
       }
+      if (req.method === 'GET' && url.pathname === '/agent.mjs' && agentFile) {
+        res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
+        return res.end(fs.readFileSync(agentFile));
+      }
+      if (req.method === 'POST' && (url.pathname === '/agent/pair' || url.pathname === '/agent/sync')) return await agentRoute(req, res, url);
       if (req.method === 'GET' && url.pathname === '/favicon.ico') {
         res.writeHead(301, { Location: '/favicon.svg' });
         return res.end();

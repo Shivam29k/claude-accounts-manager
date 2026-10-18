@@ -190,7 +190,7 @@ test('token index: de-duplicates, follows appends, attributes by timeline', asyn
 });
 
 test('http: static whitelist, CSRF header, Tailscale login filter', async (t) => {
-  const manager = { publicState: () => ({ ok: 1 }), switchTo: async (id) => ({ switched: id }) };
+  const manager = { publicState: () => ({ ok: 1 }), switchMachine: async (_machine, id) => ({ switched: id }) };
   const tokens = { series: () => ({ hours: [], models: [], ready: true }) };
   const publicDir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'public');
   const start = (opts) =>
