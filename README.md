@@ -16,8 +16,6 @@ If you have more than one Claude subscription, you know the routine. An account 
 - Token usage chart per account or per model.
 - Warnings when something would bypass your subscription, such as an API key in the environment or extra usage turned on.
 
-<img src="docs/screenshot-phone.png" alt="On a phone" width="280">
-
 ## Install
 
 Needs Linux or WSL, Node.js 20+ and Claude Code. No npm dependencies. macOS isn't supported, because Claude Code keeps its login in the Keychain there.
