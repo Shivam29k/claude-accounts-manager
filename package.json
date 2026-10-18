@@ -8,7 +8,7 @@
     "claude-accounts-manager": "server.mjs"
   },
   "scripts": {
-    "start": "node server.mjs",
+    "start": "node api.js && node server.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "engines": {
