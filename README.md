@@ -62,13 +62,13 @@ Run the app on one always-on machine (the hub), then add your other machines to 
 
 1. Click **Add machine** and copy the command (macOS/Linux or Windows).
 2. Run it on the other machine. It downloads a small agent from the hub, pairs with a one-time code and installs itself as a background service (systemd, launchd or a logon task).
-3. The machine gets a card next to the others, showing the account it uses and how close that account is to its limit. Change it from the card, or put an account on a machine with **Use on…** in the account's ⋯ menu. The table's Machines column shows who's on what.
+3. The machine gets its own column in the accounts table. A filled dot marks the account it uses; click another dot in its column to move it. Click the machine's name for its details, to rename or to remove it.
 
 Whatever account the machine was signed in to is kept: it's added to the hub if it's new. Each machine auto-switches on its own, preferring accounts no other machine is using, since machines on one account share its limits. To stop, run `node ~/.claude-accounts-agent/agent.mjs uninstall` there.
 
 ## Good to know
 
-- **Auto-switch options** are behind the arrow next to the slider. Pick which limits count, and whether to go to the account with the most room or the next one in your list. Drag rows to reorder.
+- **Switching** is one click on the dot in an account's row. **Auto-switch options** are behind the arrow next to the slider: which limits count, and whether to go to the account with the most room or the next one in your list. Drag rows to reorder.
 - **Per-account settings** live in each row's ⋯ menu: a custom limit, skipping the account in auto-switch, auto-start, sign in again, remove.
 - **Auto-start** sends `hi` on Haiku through the Claude Code CLI, using only that account's token. It costs a few tokens and leaves your live login alone. At most once per 15 minutes per account.
 - **The token chart** counts input, output and cache-write tokens from Claude Code's transcripts on every machine. Usage from before a machine was added shows as "Other" in the Accounts view.

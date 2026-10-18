@@ -20,7 +20,7 @@
   <header class="top">
     <div>
       <h1><img src="/favicon.svg" alt="" width="30" height="30">Claude Accounts Manager</h1>
-      <p class="status" id="status">&nbsp;</p>
+      <p class="status" id="status" hidden></p>
     </div>
     <div class="pill" id="pill">
       <label class="toggle"><input type="checkbox" id="autoSwitch"><span class="knob"></span><span class="sr">Auto-switch</span></label>
@@ -52,14 +52,11 @@
   </section>
   </div></div>
 
-  <div class="sec-h" id="fleetHead" hidden><span class="cap">Machines</span><button class="link" data-act="add-machine">+ Add machine</button></div>
-  <section class="fleet" id="fleet" aria-label="Machines"></section>
-
   <section class="panel accounts" id="accounts">
     <div class="tr th cap" id="thead"></div>
     <div id="rows"></div>
     <div class="tfoot">
-      <button class="link" data-act="add">+ Add account</button>
+      <div class="tf-l"><button class="link" data-act="add">+ Add account</button><button class="link" data-act="add-machine">+ Add machine</button></div>
       <button class="link" id="refreshAll"><span id="checked">Checked</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button>
     </div>
   </section>
