@@ -60,9 +60,9 @@ Then open `https://<machine>.<tailnet>.ts.net:10001` and add it to your home scr
 
 Run the app on one always-on machine (the hub), then add your other machines to it. They need Node.js 20+, Claude Code, and to be on the same tailnet.
 
-1. Click **+ Add machine** and copy the command (macOS/Linux or Windows).
+1. Click **Add machine** and copy the command (macOS/Linux or Windows).
 2. Run it on the other machine. It downloads a small agent from the hub, pairs with a one-time code and installs itself as a background service (systemd, launchd or a logon task).
-3. The machine shows up as a tab above the table. Pick a tab to see and switch what that machine uses.
+3. The machine gets a card next to the others, showing the account it uses and how close that account is to its limit. Change it from the card, or put an account on a machine with **Use on…** in the account's ⋯ menu. The table's Machines column shows who's on what.
 
 Whatever account the machine was signed in to is kept: it's added to the hub if it's new. Each machine auto-switches on its own, preferring accounts no other machine is using, since machines on one account share its limits. To stop, run `node ~/.claude-accounts-agent/agent.mjs uninstall` there.
 

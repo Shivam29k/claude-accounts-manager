@@ -52,13 +52,14 @@
   </section>
   </div></div>
 
-  <nav class="machines" id="machines" aria-label="Machines" hidden></nav>
+  <div class="sec-h" id="fleetHead" hidden><span class="cap">Machines</span><button class="link" data-act="add-machine">+ Add machine</button></div>
+  <section class="fleet" id="fleet" aria-label="Machines"></section>
 
   <section class="panel accounts" id="accounts">
     <div class="tr th cap" id="thead"></div>
     <div id="rows"></div>
     <div class="tfoot">
-      <div class="tf-l"><button class="link" data-act="add">+ Add account</button><button class="link" data-act="add-machine">+ Add machine</button></div>
+      <button class="link" data-act="add">+ Add account</button>
       <button class="link" id="refreshAll"><span id="checked">Checked</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button>
     </div>
   </section>
