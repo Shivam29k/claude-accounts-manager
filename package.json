@@ -1,0 +1,31 @@
+{
+  "name": "claude-accounts-manager",
+  "version": "1.0.0",
+  "description": "Keep several Claude subscription logins, watch their usage limits, and switch the one Claude Code uses with one click or automatically.",
+  "type": "module",
+  "main": "server.mjs",
+  "bin": {
+    "claude-accounts-manager": "server.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "server.mjs",
+    "src/",
+    "public/"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "account-switcher",
+    "usage-limits",
+    "tailscale"
+  ],
+  "license": "MIT"
+}

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#141413">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Claude Accounts">
+<title>Claude Accounts Manager</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<main>
+  <header class="top">
+    <div>
+      <h1><img src="/favicon.svg" alt="" width="30" height="30">Claude Accounts Manager</h1>
+      <p class="status" id="status">&nbsp;</p>
+    </div>
+    <div class="pill" id="pill">
+      <label class="toggle"><input type="checkbox" id="autoSwitch"><span class="knob"></span><span class="sr">Auto-switch</span></label>
+      <span class="lab">Auto-switch</span>
+      <input type="range" id="threshold" min="50" max="100" step="1" aria-label="Switch at">
+      <output id="thVal" class="num"></output>
+      <button class="chev" id="optsBtn" aria-expanded="true" aria-controls="optsWrap" aria-label="Auto-switch options"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button>
+    </div>
+  </header>
+
+  <div class="alerts" id="alerts"></div>
+
+  <div class="collapse" id="optsWrap"><div class="collapse-in">
+  <section class="panel opts" id="opts">
+    <div class="grp"><span class="k">Watch</span>
+      <label class="chip"><input type="checkbox" data-watch="session"><span>5-hour</span></label>
+      <label class="chip"><input type="checkbox" data-watch="weekly"><span>Weekly</span></label>
+      <label class="chip"><input type="checkbox" data-watch="scoped"><span id="scopedName">Per-model</span></label>
+    </div>
+    <div class="grp"><span class="k">Go to</span>
+      <label class="chip"><input type="radio" name="strategy" value="lowest"><span>Most room</span></label>
+      <label class="chip"><input type="radio" name="strategy" value="priority"><span>Next in order</span></label>
+    </div>
+  </section>
+  </div></div>
+
+  <section class="panel accounts" id="accounts">
+    <div class="tr th cap" id="thead"></div>
+    <div id="rows"></div>
+    <div class="tfoot">
+      <button class="link" data-act="add">+ Add account</button>
+      <button class="link" id="refreshAll"><span id="checked">Checked</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button>
+    </div>
+  </section>
+
+  <section class="panel chart" aria-labelledby="tokTitle">
+    <div class="ch-head">
+      <div>
+        <div class="cap" id="tokTitle">Tokens</div>
+        <div class="hero" title="Input, output and cache-write tokens from Claude Code on this server. Cache reads aren’t counted."><b id="tokTotal">–</b><span id="tokSpan"></span></div>
+      </div>
+      <div class="ctrls">
+        <div class="seg" id="views" aria-label="Break down by">
+          <button data-view="accounts">Accounts</button><button data-view="models">Models</button>
+        </div>
+        <div class="seg" id="ranges" aria-label="Time range">
+          <button data-range="24h">24H</button><button data-range="7d">7D</button><button data-range="30d">30D</button><button data-range="all">All</button>
+        </div>
+      </div>
+    </div>
+    <div class="plot" id="plot"></div>
+    <div class="xl" id="xl" aria-hidden="true"></div>
+    <div class="legend" id="legend"></div>
+    <table class="sr" id="tokTable"></table>
+  </section>
+
+  <section class="activity">
+    <div class="cap">Activity</div>
+    <ol id="log"></ol>
+    <button class="link" id="logMore" hidden>Show all</button>
+  </section>
+</main>
+
+<div class="tip" id="tip" hidden></div>
+<div class="menu" id="menu" role="menu" hidden></div>
+
+<dialog id="sheet" aria-labelledby="sheetTitle">
+  <div class="sh-head"><h2 id="sheetTitle">Add account</h2><button class="dots" id="sheetClose" aria-label="Close">✕</button></div>
+  <div class="link-row">
+    <a class="btn primary signin" id="addLink" target="_blank" rel="noopener" aria-disabled="true">Preparing…</a>
+    <button class="btn copy" id="copyLink" disabled title="Copy the sign-in link to open it in another browser"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>Copy link</span></button>
+  </div>
+  <p class="hint" id="linkHint">Opens claude.ai. Signed in there as someone else? Copy the link into a private tab or another browser.</p>
+  <div id="codeStep" hidden>
+    <label class="field codebox"><span>Paste the code Claude shows after you approve</span>
+      <input type="text" id="addCode" placeholder="Code" autocapitalize="off" autocomplete="off" spellcheck="false" enterkeyhint="done"></label>
+    <button class="btn primary signin" id="addFinish">Add account</button>
+  </div>
+  <div class="note" id="addWait" hidden></div>
+  <div class="note bad" id="addErr" hidden></div>
+</dialog>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+node_modules/
+*.log
+.DS_Store
+# Never commit app data: it contains OAuth tokens.
+.claude-accounts-manager/
+state.json
+tokens.json

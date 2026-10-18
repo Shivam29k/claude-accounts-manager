@@ -1,0 +1,27 @@
+# systemd user service. Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/claude-accounts-manager.service ~/.config/systemd/user/
+#   # edit ExecStart (node path, checkout path) and the Environment lines below
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now claude-accounts-manager
+#   loginctl enable-linger "$USER"   # keep it running when you're logged out
+
+[Unit]
+Description=Claude Accounts Manager
+After=network-online.target
+
+[Service]
+Type=simple
+# Absolute paths: systemd doesn't see your shell's PATH (or nvm).
+ExecStart=/usr/bin/node %h/claude-accounts-manager/server.mjs
+Environment=CAM_HOST=127.0.0.1
+Environment=CAM_PORT=4330
+# Only these Tailscale users may use the UI (recommended when served over Tailscale):
+#Environment=CAM_ALLOWED_LOGINS=you@example.com
+Restart=always
+RestartSec=5
+Nice=5
+MemoryMax=200M
+
+[Install]
+WantedBy=default.target
