@@ -83,7 +83,10 @@ button, input, select { font: inherit; color: inherit; }
 .tag.ico svg { width: 13px; height: 13px; }
 .grip { display: none; }
 .row.skip .nm b, .row.skip .nm-mail, .row.skip .mc { opacity: .5; }
-.mc-top { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+.mc-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; min-width: 0; }
+.mc-top b { flex: none; }
+.mc-r { display: inline-flex; align-items: center; gap: 3px; font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; min-width: 0; font-variant-numeric: tabular-nums; }
+.mc-r svg { width: 10px; height: 10px; flex: none; }
 .mc-top b { font-size: 13px; font-weight: 600; }
 .mc-top b.near { color: var(--yellow); } .mc-top b.over { color: var(--red); }
 .mc-k { display: none; font-size: 11px; color: var(--text-3); }
@@ -91,7 +94,6 @@ button, input, select { font: inherit; color: inherit; }
 .bar { position: relative; height: 7px; margin-top: 7px; border-radius: 4px; background: #34332F; }
 .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--meter); transition: width .5s; }
 .bar i.near { background: var(--yellow); } .bar i.over { background: var(--red); }
-.mc-reset { margin-top: 5px; font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bar s { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text-3); }
 .gone { color: var(--red); font-size: 13px; }
 .act { justify-self: end; }
@@ -210,7 +212,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   .nm { flex: 1 1 0; order: 0; }
   .act { order: 1; } .dots { order: 2; } .br { display: block; order: 3; flex-basis: 100%; height: 0; }
   .mc, .gone { order: 4; flex: 1 1 0; min-width: 0; }
-  .mc-k { display: inline; }
+  .mc-k { display: block; margin-bottom: 2px; }
   .grip { display: grid; place-items: center; width: 18px; height: 28px; margin-left: -4px; color: var(--text-3); touch-action: none; cursor: grab; flex: none; }
   .grip svg { width: 12px; height: 12px; }
   .tfoot { padding: 0 12px; }

@@ -90,29 +90,32 @@ function render() {
   renderLog();
 }
 
-// "resets in 2h 41m" under each bar; the exact time is in the tooltip.
-function resetLine(m, idle) {
-  if (idle) return '<div class="mc-reset">not started</div>';
-  if (!m?.resetsAt) return '<div class="mc-reset">&nbsp;</div>';
+// Right side of the line above a bar: a reset icon and the time left ("2h 41m", "3d 9h").
+// The full wording and the exact day and time are in the tooltip.
+const ICON_RESET = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>';
+function resetText(m, idle) {
+  if (idle) return '<span class="mc-r">not started</span>';
+  if (!m?.resetsAt) return '';
   const when = untilText(m.resetsAt);
-  return `<div class="mc-reset">${when === 'now' ? 'resetting now' : `resets ${esc(when)}`}</div>`;
+  return `<span class="mc-r" aria-label="resets ${esc(when)}">${ICON_RESET}${when === 'now' ? 'now' : esc(when.replace(/^in /, ''))}</span>`;
 }
+// The limit's name sits above the line on phones (desktop has the column header instead).
+const nameLine = (label) => `<div class="mc-k">${esc(label)}</div>`;
 const resetClock = (iso) => new Date(iso).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 
 function meterCell(a, c) {
   const m = a.meters.find((x) => x.id === c.id);
   if (!m && c.cat === 'session' && a.sessionIdle) {
-    return `<div class="mc" title="5-hour window not started"><div class="mc-top"><span class="mc-k">${esc(c.label)}</span><b class="idle">Idle</b></div><div class="bar"></div>${resetLine(null, true)}</div>`;
+    return `<div class="mc" title="5-hour window not started">${nameLine(c.label)}<div class="mc-top"><b class="idle">Idle</b>${resetText(null, true)}</div><div class="bar"></div></div>`;
   }
-  if (!m) return `<div class="mc off"><div class="mc-top"><span class="mc-k">${esc(c.label)}</span><b>–</b></div><div class="bar"></div>${resetLine(null)}</div>`;
+  if (!m) return `<div class="mc off">${nameLine(c.label)}<div class="mc-top"><b>–</b></div><div class="bar"></div></div>`;
   const counted = S.settings.watch[m.cat] && m.active;
   const lv = counted ? level(m.pct, limitOf(a)) : '';
   const idle = m.cat === 'session' && a.sessionIdle;
   const title = idle ? '5-hour window not started' : `${c.label}: ${Math.round(m.pct)}% used${m.resetsAt ? `, resets ${resetClock(m.resetsAt)}` : ''}${counted ? '' : ' (not watched)'}`;
   return `<div class="mc ${m.active ? '' : 'off'}" title="${esc(title)}">
-    <div class="mc-top"><span class="mc-k">${esc(c.label)}</span>${idle ? '<b class="idle">Idle</b>' : `<b class="num ${lv}">${Math.round(m.pct)}%</b>`}</div>
+    ${nameLine(c.label)}<div class="mc-top">${idle ? '<b class="idle">Idle</b>' : `<b class="num ${lv}">${Math.round(m.pct)}%</b>`}${resetText(m, idle)}</div>
     <div class="bar"><i class="${lv}" style="width:${Math.min(100, Math.max(0, m.pct))}%"></i>${counted && S.settings.autoSwitch ? `<s style="left:${limitOf(a)}%"></s>` : ''}</div>
-    ${resetLine(m, idle)}
   </div>`;
 }
 
