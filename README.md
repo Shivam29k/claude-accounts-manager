@@ -1,10 +1,10 @@
 # Claude Accounts Manager
 
-Switch Claude Code between your Claude subscriptions with one tap, and see how much of each account's limits is left.
+Switch Claude Code between your Claude subscriptions with one tap, on every machine you use, and see how much of each account's limits is left.
 
 ![Claude Accounts Manager](docs/screenshot-desktop.png)
 
-If you have more than one Claude subscription, you know the routine. An account hits its 5-hour limit, you SSH in, run `/login` and go through the browser flow. This app does it from a web page, on your phone if you like, and can switch on its own before you hit the limit.
+If you have more than one Claude subscription, you know the routine. An account hits its 5-hour limit, you SSH in, run `/login` and go through the browser flow. This app does it from a web page, on your phone if you like, for each of your machines, and can switch on its own before you hit the limit.
 
 ## Features
 
@@ -48,7 +48,7 @@ The app only listens on 127.0.0.1. Put it on your [Tailscale](https://tailscale.
 sudo tailscale serve --bg --https=10001 http://127.0.0.1:4330
 ```
 
-Then open `https://<machine>.<tailnet>.ts.net:10001` and add it to your home screen. Set `CAM_ALLOWED_LOGINS` to your Tailscale login so nobody else on your tailnet can use it. Never expose it to the public internet. Whoever can open the page can switch your accounts.
+Then open `https://<machine>.<tailnet>.ts.net:10001` and add it to your home screen. To change the `<machine>` part, rename the machine with `sudo tailscale set --hostname=<name>` and run the `tailscale serve` command again, since Tailscale keeps serve settings per name. Set `CAM_ALLOWED_LOGINS` to your Tailscale login so nobody else on your tailnet can use it. Never expose it to the public internet. Whoever can open the page can switch your accounts.
 
 ## Add an account
 
@@ -64,7 +64,7 @@ Run the app on one always-on machine (the hub), then add your other machines to 
 2. Run it on the other machine. It downloads a small agent from the hub, pairs with a one-time code and installs itself as a background service (systemd, launchd or a logon task).
 3. The machine gets its own column in the accounts table. A filled dot marks the account it uses; click another dot in its column to move it. Click the machine's name for its details, to rename or to remove it.
 
-Whatever account the machine was signed in to is kept: it's added to the hub if it's new. Each machine auto-switches on its own, preferring accounts no other machine is using, since machines on one account share its limits. To stop, run `node ~/.claude-accounts-agent/agent.mjs uninstall` there.
+Whatever account the machine was signed in to is kept: it's added to the hub if it's new. Before changing a machine's login, the agent saves the previous one in `~/.claude-accounts-agent/backups`. Each machine auto-switches on its own, preferring accounts no other machine is using, since machines on one account share its limits. To stop, run `node ~/.claude-accounts-agent/agent.mjs uninstall` there.
 
 ## Good to know
 
