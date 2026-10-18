@@ -18,6 +18,8 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
   let health = { warnings: [], at: 0 };
 
   const accLoad = (acc) => loadPct(meters(acc.usage?.data), state.settings.watch);
+  // Each account can have its own switch-away limit; otherwise the global threshold applies.
+  const limitOf = (acc) => (Number.isFinite(acc?.threshold) ? acc.threshold : state.settings.threshold);
 
   function applyProfile(acc, profile) {
     Object.assign(acc, profileSummary(profile));
@@ -154,7 +156,7 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
       // The live account is checked more often, and every minute once it nears the threshold.
       const live = acc.id === state.activeId;
       const pct = accLoad(acc);
-      const near = live && pct !== null && pct >= state.settings.threshold - 15;
+      const near = live && pct !== null && pct >= limitOf(acc) - 15;
       const every = near ? 60 : live ? state.settings.pollActiveSec : state.settings.pollIdleSec;
       acc.nextUsageAt = Math.max(acc.nextUsageAt || 0, now() + every * 1000);
       store.save();
@@ -200,17 +202,19 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
     const active = store.byId(state.activeId);
     if (!s.autoSwitch || !active) return;
     const pct = accLoad(active);
-    if (pct === null || pct < s.threshold) {
+    const limit = limitOf(active);
+    if (pct === null || pct < limit) {
       lastStuck = '';
       return;
     }
     if (now() - (state.lastAutoSwitchAt || 0) < s.cooldownSec * 1000) return;
     const pool = state.accounts.filter((a) => a.id !== active.id && !a.excluded && !a.authError);
     for (const a of pool) if (!a.usage || now() - a.usage.fetchedAt > 5 * MIN) await pollUsage(a, { quiet: true });
-    const candidates = pool.map((a) => ({ a, pct: accLoad(a) })).filter((x) => x.pct !== null && x.pct < s.threshold);
+    // A candidate must be under its own limit; "most room" means the most headroom below it.
+    const candidates = pool.map((a) => ({ a, pct: accLoad(a), room: limitOf(a) - accLoad(a) })).filter((x) => x.pct !== null && x.room > 0);
     if (!candidates.length) {
       const key = `${active.id}:${pct}`;
-      if (key !== lastStuck) store.log('auto', `${name(active)} is at ${pct}% and no other account is under ${s.threshold}%`, { kind: 'stuck', id: active.id, name: name(active), pct });
+      if (key !== lastStuck) store.log('auto', `${name(active)} is at ${pct}% and every other account is past its limit`, { kind: 'stuck', id: active.id, name: name(active), pct });
       lastStuck = key;
       return;
     }
@@ -220,10 +224,10 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
       const start = order.indexOf(active);
       for (let i = 1; i <= order.length && !pick; i++) pick = candidates.find((x) => x.a === order[(start + i) % order.length]);
     } else {
-      pick = candidates.sort((x, y) => x.pct - y.pct)[0];
+      pick = candidates.sort((x, y) => y.room - x.room)[0];
     }
     state.lastAutoSwitchAt = now();
-    await switchTo(pick.a.id, `Automatic: ${name(active)} reached ${pct}%, past the ${s.threshold}% switch point`, { auto: true, pct });
+    await switchTo(pick.a.id, `Automatic: ${name(active)} reached ${pct}%, past its ${limit}% limit`, { auto: true, pct, limit });
   }
 
   // ---------- auto-start 5-hour windows ----------
@@ -349,12 +353,15 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
 
   // ---------- small edits ----------
 
-  const updateAccount = ({ id, label, excluded, warmup: wantWarmup }) =>
+  const updateAccount = ({ id, label, excluded, warmup: wantWarmup, threshold }) =>
     lock(async () => {
       const a = store.byId(id);
       if (!a) throw new AppError('Unknown account');
       if (typeof label === 'string') a.label = label.trim().slice(0, 60);
       if (typeof excluded === 'boolean') a.excluded = excluded;
+      if (threshold === null) delete a.threshold; // back to the global threshold
+      else if (Number.isFinite(threshold)) a.threshold = Math.min(100, Math.max(10, Math.round(threshold)));
+      if (threshold !== undefined) setTimeout(tick, 100);
       if (typeof wantWarmup === 'boolean') {
         a.warmup = wantWarmup;
         // Turning it on for one account while the feature is off means "just the chosen ones".
@@ -475,6 +482,8 @@ export function createManager({ store, files, anthropic, warmup = null, checkHea
           usageAt: a.usage?.fetchedAt || null,
           meters: ms,
           loadPct: loadPct(ms, state.settings.watch),
+          threshold: Number.isFinite(a.threshold) ? a.threshold : null, // custom limit, if any
+          limit: limitOf(a), // the limit that applies
           extraUsage: extraUsageOn(a.usage?.data),
           sessionIdle: a.usage ? sessionIdle(a.usage.data) : null,
           warmup: !!a.warmup,

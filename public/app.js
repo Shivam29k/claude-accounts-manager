@@ -36,7 +36,9 @@ function toast(msg, ms = 2600) {
   setTimeout(() => t.remove(), ms);
 }
 
-const level = (pct) => (pct >= S.settings.threshold ? 'over' : pct >= S.settings.threshold - 10 ? 'near' : '');
+// An account's switch-away limit: its own, or the global threshold.
+const limitOf = (a) => a.threshold ?? S.settings.threshold;
+const level = (pct, limit) => (pct >= limit ? 'over' : pct >= limit - 10 ? 'near' : '');
 
 // Table columns: 5-hour, weekly, then per-model limits, from whatever the accounts report.
 function columns() {
@@ -67,8 +69,8 @@ function render() {
   let alerts = '';
   if (S.liveUnknown) alerts += `<div class="alert attn"><span>Claude Code is signed in as <b>${esc(S.liveUnknown.email)}</b>, which isn’t saved.</span><button class="btn primary" data-act="import">Save</button></div>`;
   for (const w of S.health) alerts += `<div class="alert">${esc(w)}</div>`;
-  const room = S.accounts.some((a) => a.id !== S.activeId && !a.excluded && !a.authError && a.loadPct != null && a.loadPct < s.threshold);
-  if (s.autoSwitch && active && active.loadPct >= s.threshold && !room) alerts += `<div class="alert">Every account is past ${s.threshold}%. Staying on ${esc(nameOf(active))} until a limit resets.</div>`;
+  const room = S.accounts.some((a) => a.id !== S.activeId && !a.excluded && !a.authError && a.loadPct != null && a.loadPct < limitOf(a));
+  if (s.autoSwitch && active && active.loadPct >= limitOf(active) && !room) alerts += `<div class="alert">Every account is past its limit. Staying on ${esc(nameOf(active))} until a limit resets.</div>`;
   $('#alerts').innerHTML = alerts;
 
   if (!editing) {
@@ -95,12 +97,12 @@ function meterCell(a, c) {
   }
   if (!m) return `<div class="mc off"><div class="mc-top"><span class="mc-k">${esc(c.label)}</span><b>–</b></div><div class="bar"></div></div>`;
   const counted = S.settings.watch[m.cat] && m.active;
-  const lv = counted ? level(m.pct) : '';
+  const lv = counted ? level(m.pct, limitOf(a)) : '';
   const idle = m.cat === 'session' && a.sessionIdle;
   const title = idle ? '5-hour window not started' : `${c.label}: ${Math.round(m.pct)}% used${m.resetsAt ? `, resets ${untilText(m.resetsAt)}` : ''}${counted ? '' : ' (not watched)'}`;
   return `<div class="mc ${m.active ? '' : 'off'}" title="${esc(title)}">
     <div class="mc-top"><span class="mc-k">${esc(c.label)}</span>${idle ? '<b class="idle">Idle</b>' : `<b class="num ${lv}">${Math.round(m.pct)}%</b>`}</div>
-    <div class="bar"><i class="${lv}" style="width:${Math.min(100, Math.max(0, m.pct))}%"></i>${counted && S.settings.autoSwitch ? `<s style="left:${S.settings.threshold}%"></s>` : ''}</div>
+    <div class="bar"><i class="${lv}" style="width:${Math.min(100, Math.max(0, m.pct))}%"></i>${counted && S.settings.autoSwitch ? `<s style="left:${limitOf(a)}%"></s>` : ''}</div>
   </div>`;
 }
 
@@ -116,6 +118,7 @@ function renderTable() {
           plan(a) && `<span class="tag">${esc(plan(a))}</span>`,
           a.extraUsage && '<span class="tag warn" title="Past the plan limit this account bills extra usage instead of stopping. Turn it off in claude.ai settings.">Extra usage</span>',
           a.excluded && '<span class="tag skip">Skipped</span>',
+          a.threshold != null && `<span class="tag" title="Auto-switch leaves this account at ${a.threshold}% (default ${S.settings.threshold}%)">Limit ${a.threshold}%</span>`,
           a.warmupOn && `<span class="tag ico ${a.warmupError ? 'warn' : ''}" title="${esc(a.warmupError ? `Auto-start failed: ${a.warmupError}` : 'Auto-start: this account’s 5-hour window starts automatically when it isn’t running')}" aria-label="Auto-start">${ICON_CLOCK}</span>`,
         ].filter(Boolean).join('');
         const cells = a.authError ? `<span class="gone" style="grid-column: span ${cols.length}">Signed out</span>` : cols.map((c) => meterCell(a, c)).join('');
@@ -348,6 +351,7 @@ function openMenu(btn) {
   const items = [
     !a.authError && ['refresh', 'Refresh usage'],
     ['exclude', a.excluded ? 'Include in auto-switch' : 'Skip in auto-switch'],
+    ['limit', a.threshold != null ? `Custom limit: ${a.threshold}%` : 'Custom limit…'],
     S.settings.warmup === 'all' ? ['', 'Auto-start 5h: on for all accounts', 'disabled'] : ['warmup', a.warmup ? 'Stop auto-starting 5h window' : 'Auto-start 5h window'],
     ['relogin', 'Sign in again'],
     ['remove', 'Remove', 'danger'],
@@ -368,6 +372,27 @@ function openMenu(btn) {
   menu.classList.remove('shut');
   menu.querySelector('button').focus({ preventScroll: true });
 }
+// "Custom limit…" turns the open menu into a small slider for that account's switch-away limit.
+function openLimitEditor(a) {
+  const cur = a.threshold ?? S.settings.threshold;
+  menu.innerHTML = `<div class="lim">
+    <div class="lim-h">Switch away from <b>${esc(nameOf(a))}</b> at</div>
+    <div class="lim-r"><input type="range" id="limRange" min="10" max="100" step="1" value="${cur}" aria-label="Limit for ${esc(nameOf(a))}"><output id="limOut" class="num">${cur}%</output></div>
+    <div class="lim-b">
+      <button class="btn" data-act="limit-default" data-id="${a.id}"${a.threshold == null ? ' disabled' : ''}>Use default (${S.settings.threshold}%)</button>
+      <button class="btn primary" data-act="limit-save" data-id="${a.id}">Save</button>
+    </div>
+  </div>`;
+  const range = $('#limRange');
+  range.oninput = () => ($('#limOut').textContent = `${range.value}%`);
+  range.onkeydown = (e) => e.key === 'Enter' && menu.querySelector('[data-act="limit-save"]').click();
+  // Keep the menu on screen at its new size.
+  const r = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(innerWidth - menu.offsetWidth - 8, r.right - menu.offsetWidth))}px`;
+  if (r.top + menu.offsetHeight + 8 > innerHeight) menu.style.top = `${Math.max(8, innerHeight - menu.offsetHeight - 8)}px`;
+  range.focus();
+}
+
 function closeMenu() {
   if (!menuOpen) return;
   menuOpen = null;
@@ -391,10 +416,12 @@ document.addEventListener(
     const m = ev.target.closest('[data-menu]');
     if (m) return menuOpen === m.dataset.menu ? closeMenu() : openMenu(m);
     const el = ev.target.closest('[data-act]');
+    if (ev.target.closest('#menu') && !el) return; // clicks inside the limit editor
+    const { act, id } = el?.dataset || {};
+    const a = S.accounts.find((x) => x.id === id);
+    if (act === 'limit') return openLimitEditor(a);
     closeMenu();
     if (!el) return;
-    const { act, id } = el.dataset;
-    const a = S.accounts.find((x) => x.id === id);
     try {
       if (act === 'add') return openSheet();
       if (act === 'relogin') return openSheet(a);
@@ -408,6 +435,10 @@ document.addEventListener(
         toast('Usage refreshed');
       } else if (act === 'exclude') {
         await call('/api/account', { id, excluded: !a.excluded });
+      } else if (act === 'limit-save' || act === 'limit-default') {
+        const value = act === 'limit-default' ? null : Number($('#limRange').value);
+        await call('/api/account', { id, threshold: value });
+        toast(value == null ? `${nameOf(a)} uses the default limit (${S.settings.threshold}%)` : `${nameOf(a)}: auto-switch leaves at ${value}%`);
       } else if (act === 'warmup') {
         await call('/api/account', { id, warmup: !a.warmup });
         toast(a.warmup ? `Stopped auto-starting ${nameOf(a)}` : `${nameOf(a)}’s 5-hour window will start automatically`);

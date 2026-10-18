@@ -11,7 +11,7 @@ I run Claude Code on a server and have more than one Claude subscription. Every 
 - Saves any number of Claude logins (Pro, Max, Team) and keeps their tokens refreshed, so you sign in to each account once.
 - Shows each account's 5-hour session, weekly and per-model limits, with reset times, read from the same endpoint as Claude Code's `/usage`.
 - Switches Claude Code to another account. Sessions that are already running pick up the new login on their next request, without a restart.
-- Auto-switch: when the active account reaches a threshold you set (90% by default), it moves Claude Code to the account with the most room left, or to the next one in your order.
+- Auto-switch: when the active account reaches a threshold you set (90% by default), it moves Claude Code to the account with the most room left, or to the next one in your order. Any account can have its own limit instead.
 - Can start idle accounts' 5-hour windows for you by sending them a one-word message, so their limits reset sooner. You choose which accounts.
 - Charts token usage from Claude Code's transcripts, per account or per model, for the last 24 hours, 7 days, 30 days or all time.
 - Warns about anything that would bypass your subscriptions, such as an `ANTHROPIC_API_KEY` in a running Claude process, an `apiKeyHelper`, or extra usage (pay-as-you-go) being enabled on an account.
@@ -94,6 +94,7 @@ Open the options with the arrow next to the auto-switch slider.
 
 - **Watch** chooses which limits count: the 5-hour session, the weekly limit, and per-model weekly limits such as Opus.
 - **Go to** chooses where to switch: the account with the most room left, or the next account in the list order. Drag rows to change the order.
+- **Custom limit** (in a row's ⋯ menu) gives one account its own limit instead of the slider's. Auto-switch leaves that account when it reaches its limit, and only switches to accounts that are still under theirs. "Most room" means the most headroom below each account's own limit. Rows with a custom limit show a "Limit 75%" tag, and the marks on their bars sit at that limit.
 - Accounts marked "Skip in auto-switch" (in the row's ⋯ menu) are never picked automatically.
 - After an automatic switch the app waits at least 3 minutes before switching again.
 - If every account is past the threshold, it stays put and says so.

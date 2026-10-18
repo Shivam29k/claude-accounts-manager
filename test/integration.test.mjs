@@ -72,6 +72,29 @@ test('auto-switch moves to the account with the most room', async () => {
   assert.notEqual(env.store.state.activeId, id2);
 });
 
+test('per-account limits: leave at your own limit, only go where there is room under theirs', async () => {
+  const env = setup();
+  await env.manager.start();
+  const a1 = env.store.state.accounts[0];
+  const { id: id2 } = await addAccount(env, 2);
+  const { id: id3 } = await addAccount(env, 3);
+  await env.manager.updateAccount({ id: a1.id, threshold: 70 });
+  await env.manager.updateAccount({ id: id2, threshold: 50 });
+  env.anthropic.usage.set(1, usageAt(75)); // past its own 70% (global is 90%)
+  env.anthropic.usage.set(2, usageAt(60)); // least used, but past its own 50%
+  env.anthropic.usage.set(3, usageAt(80)); // 10 points of room under the global 90%
+  await env.manager.refreshUsage();
+  assert.equal(env.store.state.activeId, id3);
+  assert.equal(env.store.state.events[0].data.limit, 70);
+
+  const pub = env.manager.publicState().accounts;
+  assert.deepEqual(pub.map((a) => [a.threshold, a.limit]), [[70, 70], [50, 50], [null, 90]]);
+  await env.manager.updateAccount({ id: id2, threshold: null });
+  assert.equal(env.manager.publicState().accounts.find((a) => a.id === id2).limit, 90);
+  await env.manager.updateAccount({ id: id2, threshold: 3 });
+  assert.equal(env.store.byId(id2).threshold, 10, 'clamped to 10-100');
+});
+
 test('auto-switch stays put when every account is past the threshold', async () => {
   const env = setup();
   await env.manager.start();

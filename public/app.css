@@ -119,6 +119,16 @@ button, input, select { font: inherit; color: inherit; }
 .menu button:hover, .menu button:focus-visible { background: #31302D; outline: none; }
 .menu button.danger { color: var(--red); }
 .menu button:disabled { color: var(--text-3); cursor: default; background: none; }
+.lim { width: 260px; padding: 8px 8px 6px; }
+.lim-h { font-size: 12.5px; color: var(--text-2); }
+.lim-h b { color: var(--text); font-weight: 600; }
+.lim-r { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
+.lim-r input { flex: 1; accent-color: var(--orange); }
+.lim-r output { font-weight: 600; min-width: 40px; text-align: right; }
+.lim-b { display: flex; gap: 6px; justify-content: flex-end; }
+.menu .lim-b button.btn { display: inline-block; width: auto; height: 30px; padding: 0 12px; border-radius: 7px; text-align: center; }
+.menu .lim-b button.btn.primary { background: var(--orange); color: #141413; }
+.menu .lim-b button.btn:not(.primary) { border: 1px solid var(--rule); background: transparent; }
 .mc-top b.idle { color: var(--text-3); font-weight: 500; }
 
 /* Token chart */
