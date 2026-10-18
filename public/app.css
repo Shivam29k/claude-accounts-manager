@@ -88,10 +88,10 @@ button, input, select { font: inherit; color: inherit; }
 .mc-top b.near { color: var(--yellow); } .mc-top b.over { color: var(--red); }
 .mc-k { display: none; font-size: 11px; color: var(--text-3); }
 .mc.off { opacity: .4; }
-.bar { position: relative; height: 4px; margin-top: 7px; border-radius: 2px; background: #34332F; }
-.bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--meter); transition: width .5s; }
+.bar { position: relative; height: 7px; margin-top: 7px; border-radius: 4px; background: #34332F; }
+.bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--meter); transition: width .5s; }
 .bar i.near { background: var(--yellow); } .bar i.over { background: var(--red); }
-.bar s { position: absolute; top: -3px; bottom: -3px; width: 1.5px; background: var(--text-3); }
+.bar s { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text-3); }
 .gone { color: var(--red); font-size: 13px; }
 .act { justify-self: end; }
 .btn { appearance: none; border: 1px solid var(--rule); background: var(--bg); border-radius: 8px; padding: 0 14px; height: 32px; font-size: 13px; font-weight: 550; cursor: pointer; white-space: nowrap; }
